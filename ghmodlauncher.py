@@ -2,7 +2,10 @@
 """
 GH Mod Launcher - crude CurseForge-style launcher: instances (mod profiles), GitHub mods/packs,
 and a built-in game runner.
-Stdlib only (Python 3.9+, 3.11+ recommended for Forge/NeoForge dependency parsing).
+Python 3.9+ (3.11+ recommended for Forge/NeoForge dependency parsing).
+Glass UI (rounded panels, smoke fades, glowing buttons) uses Pillow.
+Pillow is installed automatically on first launch if missing — no manual pip needed.
+Falls back to the flat theme if install is blocked offline / by policy.
 
 Mods:     GitHub releases, Modrinth and CurseForge (paste a link). Matches loader + MC version,
           installs required dependencies automatically, verifies hashes (GitHub digest / sidecar /
@@ -19,7 +22,9 @@ Auth:     Microsoft account (device-code flow) required to play; no offline mode
           hand it to the official Minecraft launcher (its own Microsoft login).
 Profiles: Multiple independent instances (MC version, loader, mods, settings).
 """
+import base64
 import hashlib
+import io
 import json
 import os
 import platform
@@ -45,6 +50,98 @@ try:
     import tomllib
 except ImportError:  # Python < 3.11
     tomllib = None
+
+_PIL_IMPORT_ERROR = None  # last failure reason (for diagnostics)
+
+
+def _ensure_user_site_on_path():
+    """Make sure the per-user site-packages dir is importable (Windows --user installs)."""
+    try:
+        import site
+        if hasattr(site, "getusersitepackages"):
+            usp = site.getusersitepackages()
+            if usp and usp not in sys.path and os.path.isdir(usp):
+                sys.path.insert(0, usp)
+        if hasattr(site, "addsitedir"):
+            for key in ("USER_SITE",):
+                pth = getattr(site, key, None)
+                if isinstance(pth, str) and os.path.isdir(pth):
+                    site.addsitedir(pth)
+    except Exception:
+        pass
+
+
+def _try_import_pil():
+    """Return True and bind PIL symbols into this module if Pillow is importable."""
+    global HAS_PIL, Image, ImageDraw, ImageFilter, ImageFont, _PIL_IMPORT_ERROR
+    _ensure_user_site_on_path()
+    # Drop a half-loaded / broken PIL from sys.modules so a retry can succeed
+    for name in list(sys.modules):
+        if name == "PIL" or name.startswith("PIL."):
+            del sys.modules[name]
+    try:
+        from PIL import Image as _Image, ImageDraw as _ImageDraw
+        from PIL import ImageFilter as _ImageFilter, ImageFont as _ImageFont
+        # Touch a real codec path so DLL load failures surface here, not later
+        _Image.new("RGBA", (1, 1))
+        Image, ImageDraw, ImageFilter, ImageFont = _Image, _ImageDraw, _ImageFilter, _ImageFont
+        HAS_PIL = True
+        _PIL_IMPORT_ERROR = None
+        return True
+    except Exception as e:
+        HAS_PIL = False
+        Image = ImageDraw = ImageFilter = ImageFont = None
+        _PIL_IMPORT_ERROR = f"{type(e).__name__}: {e}"
+        return False
+
+
+HAS_PIL = False
+Image = ImageDraw = ImageFilter = ImageFont = None
+_try_import_pil()
+
+
+def ensure_pillow(log=None):
+    """
+    Ensure Pillow is available for the glass UI.
+    Installs or reinstalls with the same Python that runs this launcher so users
+    never need to run pip themselves. Returns True if PIL is usable afterwards.
+    """
+    if HAS_PIL or _try_import_pil():
+        return True
+    _log = log or (lambda m: print(m, flush=True))
+    if _PIL_IMPORT_ERROR:
+        _log(f"Glass UI: Pillow import failed ({_PIL_IMPORT_ERROR}) — repairing...")
+    else:
+        _log("Glass UI: Pillow not found — installing automatically (one-time)...")
+    try:
+        import ensurepip
+        ensurepip.bootstrap(user=True)
+    except Exception:
+        pass
+    # --force-reinstall covers "pip says installed" but the binary failed to load
+    pip_cmds = [
+        [sys.executable, "-m", "pip", "install", "--user", "--upgrade", "--force-reinstall",
+         "--disable-pip-version-check", "pillow"],
+        [sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall",
+         "--disable-pip-version-check", "pillow"],
+        [sys.executable, "-m", "pip", "install", "--user", "--disable-pip-version-check", "pillow"],
+    ]
+    last_err = _PIL_IMPORT_ERROR or "unknown error"
+    for cmd in pip_cmds:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if _try_import_pil():
+                _log("Glass UI: Pillow ready — rounded glass + glowing buttons enabled.")
+                return True
+            if r.returncode != 0:
+                lines = (r.stderr or r.stdout or f"exit {r.returncode}").strip().splitlines()
+                last_err = lines[-1] if lines else f"exit {r.returncode}"
+            elif _PIL_IMPORT_ERROR:
+                last_err = _PIL_IMPORT_ERROR
+        except Exception as e:
+            last_err = str(e)
+    _log(f"Glass UI: Pillow still unavailable ({last_err}). Flat theme will be used.")
+    return False
 
 API = "https://api.github.com"
 HOME = os.path.expanduser("~")
@@ -87,7 +184,49 @@ BUILTIN_DEP_MAP = {
     "yet_another_config_lib_v3": "isXander/YetAnotherConfigLib",
     "modmenu": "TerraformersMC/ModMenu",
     "kotlinforforge": "thedarkcolour/KotlinForForge",
+    "sodium": "CaffeineMC/sodium-fabric",
+    "iris": "IrisShaders/Iris",
+    "lithium": "CaffeineMC/lithium-fabric",
+    "phosphor": "CaffeineMC/phosphor-fabric",
+    "entityculling": "tr7zw/EntityCulling",
+    "ferritecore": "malte0811/FerriteCore",
+    "indium": "comp500/Indium",
+    "reeses-sodium-options": "FlashyReese/reeses-sodium-options",
+    "sodium-extra": "FlashyReese/sodium-extra",
+    "lambdynlights": "LambdAurora/LambDynamicLights",
+    "midnightlib": "TeamMidnightDust/MidnightLib",
+    "trinkets": "emilyploszaj/trinkets",
+    "pehkui": "Virtuoel/Pehkui",
+    "xaeros_minimap": "sargunv/Xaeros_Minimap",
+    "xaerominimap": "sargunv/Xaeros_Minimap",
+    "jei": "mezz/JustEnoughItems",
+    "roughlyenoughitems": "shedaniel/RoughlyEnoughItems",
+    "appleskin": "squeek502/AppleSkin",
+    "jade": "Snownee/Jade",
+    "wthit": "badasintended/wthit",
+    "continuity": "PepperCode1/Continuity",
+    "fabric-permission-api": "lucko/fabric-permissions-api",
+    "placeholder-api": "Patbox/TextPlaceholderAPI",
+    "servercore": "Wesley1808/ServerCore",
+    "c2me": "RelativityMC/C2ME-fabric",
+    "krypton": "astei/krypton",
+    "starlight": "PaperMC/Starlight",
+    "lazy-dfu": "tuxed/Lazydfu",
+    "modernfix": "astei/modernfix",
+    "memoryleakfix": "leonardo-d-carvalho/memoryleakfix",
+    "smoothboot": "UltimateBoomer/Smooth-Boot",
+    "dynamicfps": "juliand665/Dynamic-FPS",
+    "capes": "caelthecoldeye/Capes",
+    "authme": "axieum/authme",
+    "essential-dependencies": "EssentialGG/EssentialDependencies",
 }
+
+# Optional direct-jar installs: paste a https://...jar link in Add mod
+
+# CurseForge API key signup (shown as a clickable link in Settings)
+CF_API_KEY_URL = "https://console.curseforge.com/"
+GH_TOKEN_URL = "https://github.com/settings/tokens"
+MR_TOKEN_URL = "https://modrinth.com/settings/account"  # optional PAT for higher limits
 
 # MC versions 1.14+; used to skip builds that are clearly for a *different* MC version
 OTHER_MC_RE = re.compile(r"(?<![\d.])1\.(?:1[4-9]|2\d)(?:\.\d+)?(?!\d)")
@@ -157,7 +296,7 @@ def load_config():
            "msa_client_id": "", "account": None,
            "update_repo": DEFAULT_UPDATE_REPO, "skip_update_version": "",
            "official_launcher_path": "", "curseforge_api_key": "",
-           "theme_bg": DEFAULT_BG}
+           "modrinth_token": "", "theme_bg": DEFAULT_BG}
     try:
         with open(CONFIG_PATH) as f:
             cfg.update(json.load(f))
@@ -1052,6 +1191,8 @@ def mod_source(key):
         return "modrinth"
     if key.startswith("curseforge:"):
         return "curseforge"
+    if key.startswith("url:"):
+        return "url"
     return "github"
 
 
@@ -1060,9 +1201,80 @@ def installed_vid(key, info):
     return info.get("tag") if mod_source(key) == "github" else info.get("version_id")
 
 
-def mr_json(path, params=None):
+def mr_json(path, params=None, token=""):
+    """Modrinth API. Optional PAT raises rate limits; never required for public data."""
     url = MR_API + path + (("?" + urllib.parse.urlencode(params)) if params else "")
-    return json.loads(fetch_bytes(url))
+    h = {"User-Agent": "ghmodlauncher", "Accept": "application/json"}
+    tok = (token or os.environ.get("MODRINTH_TOKEN") or "").strip()
+    if tok:
+        h["Authorization"] = tok
+    req = urllib.request.Request(url, headers=h)
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def search_modrinth(query, loader="", mc="", limit=20, token=""):
+    """Search Modrinth mods. Returns list of {source, id, slug, name, description, downloads, loaders}."""
+    facets = [["project_type:mod"]]
+    if loader:
+        facets.append([f"categories:{loader}"])
+    if mc:
+        facets.append([f"versions:{mc}"])
+    params = {
+        "query": query or "",
+        "limit": max(1, min(int(limit), 50)),
+        "index": "relevance",
+        "facets": json.dumps(facets),
+    }
+    data = mr_json("/search", params, token=token)
+    out = []
+    for hit in data.get("hits") or []:
+        out.append({
+            "source": "modrinth",
+            "id": hit.get("project_id") or hit.get("slug"),
+            "slug": hit.get("slug") or "",
+            "name": hit.get("title") or hit.get("slug") or "?",
+            "description": (hit.get("description") or "")[:160],
+            "downloads": hit.get("downloads") or 0,
+            "loaders": hit.get("categories") or [],
+            "url": f"https://modrinth.com/mod/{hit.get('slug') or hit.get('project_id')}",
+        })
+    return out
+
+
+def search_curseforge(cfg, query, loader="", mc="", limit=20):
+    """Search CurseForge mods. Requires API key. Same result shape as search_modrinth."""
+    params = {
+        "gameId": CF_GAME_ID,
+        "classId": CF_CLASS_MODS,
+        "searchFilter": query or "",
+        "pageSize": max(1, min(int(limit), 50)),
+        "sortField": 2,  # Popularity
+        "sortOrder": "desc",
+    }
+    if mc:
+        params["gameVersion"] = mc
+    lt = CF_LOADER_TYPE.get((loader or "").lower())
+    if lt:
+        params["modLoaderType"] = lt
+    data = cf_json(cfg, "/mods/search", params)["data"]
+    out = []
+    for m in data:
+        loaders = []
+        for lf in m.get("latestFilesIndexes") or []:
+            # modLoader is int on some payloads; name may appear in gameVersions
+            pass
+        out.append({
+            "source": "curseforge",
+            "id": str(m["id"]),
+            "slug": m.get("slug") or str(m["id"]),
+            "name": m.get("name") or "?",
+            "description": (m.get("summary") or "")[:160],
+            "downloads": m.get("downloadCount") or 0,
+            "loaders": loaders,
+            "url": f"https://www.curseforge.com/minecraft/mc-mods/{m.get('slug') or m['id']}",
+        })
+    return out
 
 
 def cf_key(cfg):
@@ -1087,15 +1299,18 @@ def cf_json(cfg, path, params=None, body=None):
 
 
 def parse_mod_link(text):
-    """-> (source, ref) for a GitHub repo, Modrinth mod link or CurseForge mod link; (None, None) if unknown."""
+    """-> (source, ref) for GitHub / Modrinth / CurseForge / direct .jar URL; (None, None) if unknown."""
     t = (text or "").strip()
+    # Direct jar URL (any host) — useful when a mod is only published as a file link
+    if re.match(r"https?://\S+\.jar(?:\?\S*)?$", t, re.I):
+        return "url", t
     m = re.match(r"(?:https?://)?(?:www\.)?modrinth\.com/(?:mod|plugin|datapack)/([^/?#\s]+)", t)
     if m:
         return "modrinth", m.group(1)
     m = re.match(r"(?:https?://)?(?:www\.)?curseforge\.com/minecraft/mc-mods/([^/?#\s]+)", t)
     if m:
         return "curseforge", m.group(1)
-    m = re.match(r"(modrinth|curseforge):(\S+)$", t, re.I)
+    m = re.match(r"(modrinth|curseforge|url):(\S+)$", t, re.I)
     if m:
         return m.group(1).lower(), m.group(2)
     repo = re.sub(r"^https?://github\.com/", "", t).strip("/")
@@ -1110,8 +1325,13 @@ def resolve_mod(source, ref, cfg):
     """-> (key, display name). Modrinth/CurseForge keys use the stable project id."""
     if source == "github":
         return ref, ref
+    if source == "url":
+        name = os.path.basename(urllib.parse.urlparse(ref).path) or "direct.jar"
+        # stable key from url hash so re-add updates the same entry
+        key = "url:" + hashlib.sha1(ref.encode("utf-8")).hexdigest()[:12]
+        return key, name
     if source == "modrinth":
-        p = mr_json(f"/project/{urllib.parse.quote(ref)}")
+        p = mr_json(f"/project/{urllib.parse.quote(ref)}", token=(cfg.get("modrinth_token") or ""))
         return f"modrinth:{p['id']}", p.get("title") or ref
     if ref.isdigit():
         mod = cf_json(cfg, f"/mods/{ref}")["data"]
@@ -1140,13 +1360,13 @@ def mr_norm(v):
                      for d in v.get("dependencies", []) if d.get("dependency_type") == "required"]}
 
 
-def mr_versions(project, inst):
+def mr_versions(project, inst, token=""):
     loaders = [inst["loader"]] + (["fabric"] if inst["loader"] == "quilt" else [])
     params = {"loaders": json.dumps(loaders)}
     mc = inst["mc_version"].strip()
     if mc:
         params["game_versions"] = json.dumps([mc])
-    raw = mr_json(f"/project/{urllib.parse.quote(str(project))}/version", params)
+    raw = mr_json(f"/project/{urllib.parse.quote(str(project))}/version", params, token=token)
     return [n for n in map(mr_norm, raw) if n]
 
 
@@ -1197,8 +1417,11 @@ def list_versions(key, inst, cfg):
     src = mod_source(key)
     if src == "github":
         return gh_versions(key, inst, cfg.get("token", ""))
+    if src == "url":
+        return []  # direct jar links have no version catalog
     pid = key.split(":", 1)[1]
-    return mr_versions(pid, inst) if src == "modrinth" else cf_versions(pid, inst, cfg)
+    tok = (cfg.get("modrinth_token") or "")
+    return mr_versions(pid, inst, token=tok) if src == "modrinth" else cf_versions(pid, inst, cfg)
 
 
 def pick_latest(versions):
@@ -1725,12 +1948,13 @@ def ensure_loader(inst, rt, java, log):
 
 # ================================================================= theme
 # Default matches the original dark look. Background is user-customizable.
-DEFAULT_BG = "#1b1d25"
+# Charcoal matches the reference UI (soft dark panels, blue accents, green PLAY)
+DEFAULT_BG = "#16181f"
 BG_PRESETS = (
     ("Snow", "#ffffff"),
     ("Mist", "#e8e8ec"),
     ("Slate", "#6b6f7a"),
-    ("Charcoal", "#2a2d36"),
+    ("Charcoal", "#16181f"),
     ("Midnight", "#0a0a0c"),
 )
 
@@ -1761,36 +1985,90 @@ def _luma(h):
 
 
 def build_palette(bg_hex=None):
-    """Derive a full UI palette from a background color (light or dark)."""
+    """
+    Derive a full UI palette from a background color.
+    Light presets (Snow/Mist) -> dark text; dark presets -> light text;
+    mid (Slate) -> dark text on slightly lifted surfaces so labels stay readable.
+    """
     bg = (bg_hex or DEFAULT_BG).strip()
     if not re.fullmatch(r"#[0-9A-Fa-f]{6}", bg):
         bg = DEFAULT_BG
-    light = _luma(bg) > 0.55
-    if light:
-        surface = _mix(bg, "#000000", 0.06)
-        surface2 = _mix(bg, "#000000", 0.12)
-        border = _mix(bg, "#000000", 0.22)
-        fg = "#1a1c24"
-        muted = "#5c6370"
-        accent, accent_hi = "#3d6fd9", "#2a5bc4"
-        green, green_hi = "#1f8a5a", "#187048"
-        red, red_hi = "#c0392b", "#a93226"
-        amber = "#b8860b"
+    L = _luma(bg)
+    # thresholds tuned so Slate (#6b6f7a ~0.43) uses dark text, not washed-out white
+    if L >= 0.58:
+        mode = "light"
+    elif L <= 0.38:
+        mode = "dark"
     else:
-        surface = _mix(bg, "#ffffff", 0.07)
+        mode = "mid"
+
+    if mode == "light":
+        # Panels only a hair off the chosen bg (never much darker)
+        surface = _mix(bg, "#000000", 0.03)
+        surface2 = _mix(bg, "#000000", 0.06)
+        border = _mix(bg, "#000000", 0.14)
+        glass = surface
+        fg = "#0e1016"
+        muted = "#4a5160"
+        outline = "#ffffff"
+        accent, accent_hi = "#2f62d6", "#1e4db8"
+        accent_glow = "#a8c4ff"
+        green, green_hi = "#178a52", "#0f6b3e"
+        green_glow = "#8eecc0"
+        red, red_hi = "#c0392b", "#9b2e23"
+        red_glow = "#ffb0a8"
+        amber = "#9a7209"
+        on_accent = "#ffffff"
+        btn = _mix(bg, "#000000", 0.05)
+        btn_border = _mix(bg, "#000000", 0.16)
+    elif mode == "mid":
+        surface = _mix(bg, "#ffffff", 0.08)
         surface2 = _mix(bg, "#ffffff", 0.14)
-        border = _mix(bg, "#ffffff", 0.22)
-        fg = "#e8eaf2"
-        muted = "#8d93a7"
-        accent, accent_hi = "#5b8cff", "#7aa3ff"
-        green, green_hi = "#2fa876", "#43c18b"
-        red, red_hi = "#c94c48", "#e0625e"
+        border = _mix(bg, "#000000", 0.18)
+        glass = surface
+        fg = "#10131a"
+        muted = "#2a303c"
+        outline = "#e8ecf4"
+        accent, accent_hi = "#3d6fd9", "#2a55c0"
+        accent_glow = "#c5d7ff"
+        green, green_hi = "#1a8f58", "#147246"
+        green_glow = "#b6f0d0"
+        red, red_hi = "#c94c48", "#a83c38"
+        red_glow = "#ffc4c0"
+        amber = "#8a6808"
+        on_accent = "#ffffff"
+        btn = _mix(bg, "#ffffff", 0.12)
+        btn_border = _mix(bg, "#000000", 0.20)
+    else:
+        # Lift toward white only — panels stay the same family as bg, not a darker navy
+        surface = _mix(bg, "#ffffff", 0.06)
+        surface2 = _mix(bg, "#ffffff", 0.10)
+        border = _mix(bg, "#ffffff", 0.14)
+        glass = surface
+        fg = "#eef1f8"
+        muted = "#8b93a8"
+        outline = "#0a0c12"
+        accent, accent_hi = "#3d9eff", "#5cb0ff"
+        accent_glow = "#1a4a7a"
+        green, green_hi = "#2ee59a", "#4dffb3"
+        green_glow = "#0d5c3a"
+        red, red_hi = "#e85d5d", "#ff7a7a"
+        red_glow = "#5a2020"
         amber = "#f0b429"
+        on_accent = "#ffffff"
+        btn = _mix(bg, "#ffffff", 0.09)
+        btn_border = _mix(bg, "#ffffff", 0.16)
+
+    smoke_top = _mix(bg, "#ffffff" if mode != "light" else "#000000", 0.04)
+    smoke_bot = bg
     return {
-        "bg": bg, "surface": surface, "surface2": surface2, "border": border,
-        "fg": fg, "muted": muted, "accent": accent, "accent_hi": accent_hi,
-        "green": green, "green_hi": green_hi, "red": red, "red_hi": red_hi, "amber": amber,
-        "on_accent": "#ffffff",
+        "bg": bg, "surface": surface, "surface2": surface2, "border": border, "glass": glass,
+        "fg": fg, "muted": muted, "outline": outline,
+        "accent": accent, "accent_hi": accent_hi, "accent_glow": accent_glow,
+        "green": green, "green_hi": green_hi, "green_glow": green_glow,
+        "red": red, "red_hi": red_hi, "red_glow": red_glow, "amber": amber,
+        "on_accent": on_accent, "smoke_top": smoke_top, "smoke_bot": smoke_bot,
+        "btn": btn, "btn_border": btn_border, "mode": mode,
     }
 
 
@@ -1798,7 +2076,7 @@ PAL = build_palette(DEFAULT_BG)
 
 
 def apply_theme(root, bg_hex=None):
-    """ttk theme (built on 'clam') from a background color. Returns the UI font family."""
+    """ttk theme (clam) with glass cards, glow-mapped buttons, high-contrast text."""
     global PAL
     if bg_hex is not None:
         PAL = build_palette(bg_hex)
@@ -1815,7 +2093,7 @@ def apply_theme(root, bg_hex=None):
     root.option_add("*TCombobox*Listbox.background", P["surface2"])
     root.option_add("*TCombobox*Listbox.foreground", P["fg"])
     root.option_add("*TCombobox*Listbox.selectBackground", P["accent"])
-    root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+    root.option_add("*TCombobox*Listbox.selectForeground", P["on_accent"])
     st = ttk.Style(root)
     try:
         st.theme_use("clam")
@@ -1823,52 +2101,70 @@ def apply_theme(root, bg_hex=None):
         pass
     bold = (ff, 10, "bold")
     st.configure(".", background=P["bg"], foreground=P["fg"], fieldbackground=P["surface2"],
-                 bordercolor=P["border"], lightcolor=P["border"], darkcolor=P["border"],
-                 troughcolor=P["bg"], focuscolor=P["bg"], insertcolor=P["fg"],
-                 selectbackground=P["accent"], selectforeground="#ffffff")
+                 bordercolor=P["border"], lightcolor=P["glass"], darkcolor=P["border"],
+                 troughcolor=P["bg"], focuscolor=P["accent_glow"], insertcolor=P["fg"],
+                 selectbackground=P["accent"], selectforeground=P["on_accent"])
     st.configure("TFrame", background=P["bg"])
     st.configure("Card.TFrame", background=P["surface"])
+    st.configure("Glass.TFrame", background=P["glass"])
     st.configure("TLabel", background=P["bg"], foreground=P["fg"])
     st.configure("Card.TLabel", background=P["surface"], foreground=P["fg"])
     st.configure("Muted.TLabel", background=P["bg"], foreground=P["muted"])
     st.configure("CardMuted.TLabel", background=P["surface"], foreground=P["muted"])
-    st.configure("Title.TLabel", background=P["surface"], foreground=P["fg"], font=(ff, 15, "bold"))
+    st.configure("Title.TLabel", background=P["glass"], foreground=P["fg"], font=(ff, 15, "bold"))
     st.configure("Section.TLabel", background=P["surface"], foreground=P["accent_hi"], font=(ff, 8, "bold"))
     st.configure("BgSection.TLabel", background=P["bg"], foreground=P["accent_hi"], font=(ff, 8, "bold"))
     st.configure("Status.TLabel", background=P["surface"], foreground=P["muted"])
     st.configure("TLabelframe", background=P["bg"], bordercolor=P["border"], relief="solid", borderwidth=1)
     st.configure("TLabelframe.Label", background=P["bg"], foreground=P["accent_hi"], font=bold)
 
-    st.configure("TButton", background=P["surface2"], foreground=P["fg"], borderwidth=0, focusthickness=0,
-                 padding=(12, 6), relief="flat")
-    st.map("TButton", background=[("disabled", P["surface"]), ("pressed", P["border"]), ("active", P["border"])],
-           foreground=[("disabled", P["muted"])])
-    for name, base, hi in (("Accent", "accent", "accent_hi"), ("Play", "green", "green_hi"),
-                           ("Danger", "red", "red_hi")):
-        st.configure(f"{name}.TButton", background=P[base], foreground="#ffffff", font=bold)
-        st.map(f"{name}.TButton", background=[("disabled", P["surface2"]), ("pressed", P[base]), ("active", P[hi])],
-               foreground=[("disabled", P["muted"])])
-    st.configure("Play.TButton", font=(ff, 12, "bold"), padding=(26, 9))
+    # Soft “pill” buttons (clam approximates rounded via padding + border colors)
+    st.configure("TButton", background=P["surface2"], foreground=P["fg"], borderwidth=1,
+                 focusthickness=1, focuscolor=P["accent_glow"], padding=(14, 7), relief="flat",
+                 bordercolor=P["border"], lightcolor=P["glass"], darkcolor=P["border"])
+    st.map("TButton",
+           background=[("disabled", P["surface"]), ("pressed", P["border"]), ("active", P["glass"])],
+           foreground=[("disabled", P["muted"])],
+           bordercolor=[("active", P["accent"]), ("focus", P["accent_hi"])],
+           lightcolor=[("active", P["accent_glow"]), ("focus", P["accent_glow"])])
 
-    st.configure("TEntry", fieldbackground=P["surface2"], foreground=P["fg"], padding=5, borderwidth=1)
-    st.map("TEntry", fieldbackground=[("readonly", P["surface"])], bordercolor=[("focus", P["accent"])],
-           lightcolor=[("focus", P["accent"])], darkcolor=[("focus", P["accent"])])
+    for name, base, hi, glow in (
+            ("Accent", "accent", "accent_hi", "accent_glow"),
+            ("Play", "green", "green_hi", "green_glow"),
+            ("Danger", "red", "red_hi", "red_glow")):
+        st.configure(f"{name}.TButton", background=P[base], foreground=P["on_accent"], font=bold,
+                     borderwidth=2, padding=(16, 8), bordercolor=P[glow],
+                     lightcolor=P[glow], darkcolor=P[base])
+        st.map(f"{name}.TButton",
+               background=[("disabled", P["surface2"]), ("pressed", P[base]), ("active", P[hi])],
+               foreground=[("disabled", P["muted"])],
+               bordercolor=[("active", P[hi]), ("focus", P[glow])],
+               lightcolor=[("active", P[glow]), ("focus", P[glow])])
+    st.configure("Play.TButton", font=(ff, 12, "bold"), padding=(28, 10))
+
+    st.configure("TEntry", fieldbackground=P["surface2"], foreground=P["fg"], padding=6, borderwidth=1,
+                 bordercolor=P["border"], lightcolor=P["glass"], darkcolor=P["border"])
+    st.map("TEntry", fieldbackground=[("readonly", P["surface"])],
+           bordercolor=[("focus", P["accent"])], lightcolor=[("focus", P["accent_glow"])],
+           darkcolor=[("focus", P["accent"])])
     st.configure("TCombobox", fieldbackground=P["surface2"], background=P["surface2"], foreground=P["fg"],
-                 arrowcolor=P["muted"], padding=5)
+                 arrowcolor=P["muted"], padding=5, bordercolor=P["border"], lightcolor=P["glass"])
     st.map("TCombobox", fieldbackground=[("readonly", P["surface2"])], foreground=[("readonly", P["fg"])],
            selectbackground=[("readonly", P["surface2"])], selectforeground=[("readonly", P["fg"])],
-           bordercolor=[("focus", P["accent"])])
+           bordercolor=[("focus", P["accent"])], lightcolor=[("focus", P["accent_glow"])])
     st.configure("TCheckbutton", background=P["bg"], foreground=P["fg"])
-    st.map("TCheckbutton", background=[("active", P["bg"])])
+    st.map("TCheckbutton", background=[("active", P["bg"])], foreground=[("active", P["fg"])])
 
-    st.configure("TNotebook", background=P["bg"], borderwidth=0, tabmargins=(0, 0, 0, 0))
-    st.configure("TNotebook.Tab", background=P["surface"], foreground=P["muted"], padding=(22, 9), borderwidth=0)
-    st.map("TNotebook.Tab", background=[("selected", P["surface2"]), ("active", P["surface2"])],
-           foreground=[("selected", P["fg"]), ("active", P["fg"])])
+    st.configure("TNotebook", background=P["bg"], borderwidth=0, tabmargins=(4, 4, 0, 0))
+    st.configure("TNotebook.Tab", background=P["surface"], foreground=P["muted"], padding=(22, 9),
+                 borderwidth=1, bordercolor=P["border"], lightcolor=P["glass"])
+    st.map("TNotebook.Tab", background=[("selected", P["glass"]), ("active", P["surface2"])],
+           foreground=[("selected", P["fg"]), ("active", P["fg"])],
+           bordercolor=[("selected", P["accent"])], lightcolor=[("selected", P["accent_glow"])])
 
     st.configure("Treeview", background=P["surface"], fieldbackground=P["surface"], foreground=P["fg"],
                  rowheight=27, borderwidth=0, relief="flat")
-    st.map("Treeview", background=[("selected", P["accent"])], foreground=[("selected", "#ffffff")])
+    st.map("Treeview", background=[("selected", P["accent"])], foreground=[("selected", P["on_accent"])])
     st.configure("Treeview.Heading", background=P["surface2"], foreground=P["fg"], relief="flat",
                  borderwidth=0, padding=(8, 6), font=bold)
     st.map("Treeview.Heading", background=[("active", P["border"])])
@@ -1877,10 +2173,302 @@ def apply_theme(root, bg_hex=None):
                      arrowcolor=P["muted"], relief="flat", gripcount=0)
         st.map(f"{o}.TScrollbar", background=[("active", P["border"])])
     st.configure("Horizontal.TProgressbar", troughcolor=P["surface2"], background=P["accent"],
-                 bordercolor=P["surface"], lightcolor=P["accent"], darkcolor=P["accent"], thickness=6)
+                 bordercolor=P["surface"], lightcolor=P["accent_glow"], darkcolor=P["accent"], thickness=6)
     st.configure("TPanedwindow", background=P["bg"])
     st.configure("Sash", background=P["bg"], sashthickness=6)
     return ff
+
+
+def draw_smoke_gradient(canvas, width, height):
+    """Soft vertical smoke fade used behind the header / title bar."""
+    P = PAL
+    canvas.delete("smoke")
+    if width < 2 or height < 2:
+        return
+    steps = max(8, min(height, 48))
+    for i in range(steps):
+        t = i / max(1, steps - 1)
+        col = _mix(P["smoke_top"], P["smoke_bot"], t)
+        y0 = int(i * height / steps)
+        y1 = int((i + 1) * height / steps)
+        canvas.create_rectangle(0, y0, width, y1, outline="", fill=col, tags="smoke")
+
+
+def draw_outlined_text(canvas, x, y, text, font, fill, outline=None, tag="otxt"):
+    """Title text (outline arg kept for call-site compatibility; no border drawn)."""
+    canvas.delete(tag)
+    canvas.create_text(x, y, text=text, font=font, fill=fill, anchor="w", tags=tag)
+
+
+
+
+def _pil_round_rect(draw, box, radius, fill, outline=None, width=1):
+    draw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline, width=width)
+
+
+def _pil_vertical_gradient(size, top_rgb, bot_rgb):
+    w, h = size
+    img = Image.new("RGB", (w, h))
+    px = img.load()
+    for y in range(h):
+        t = y / max(1, h - 1)
+        r = int(top_rgb[0] + (bot_rgb[0] - top_rgb[0]) * t)
+        g = int(top_rgb[1] + (bot_rgb[1] - top_rgb[1]) * t)
+        b = int(top_rgb[2] + (bot_rgb[2] - top_rgb[2]) * t)
+        for x in range(w):
+            px[x, y] = (r, g, b)
+    return img
+
+
+def _photo_from_pil(img, master):
+    """RGBA/RGB PIL image -> tk.PhotoImage (PNG base64). Keeps a ref on master._photo_refs."""
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGBA")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    data = base64.b64encode(buf.getvalue())
+    photo = tk.PhotoImage(data=data, master=master)
+    refs = getattr(master, "_photo_refs", None)
+    if refs is None:
+        refs = []
+        master._photo_refs = refs
+    refs.append(photo)
+    if len(refs) > 80:
+        master._photo_refs = refs[-40:]
+    return photo
+
+
+def render_glass_bar(master, width, height, radius=16):
+    """Smoky glass header strip with soft glow edge. Falls back to flat color without PIL."""
+    P = PAL
+    width, height = max(8, int(width)), max(8, int(height))
+    if not HAS_PIL:
+        img = None
+        return None
+    top, bot = _hex_to_rgb(P["smoke_top"]), _hex_to_rgb(P["smoke_bot"])
+    base = _pil_vertical_gradient((width, height), top, bot).convert("RGBA")
+    # frosted overlay
+    frost = Image.new("RGBA", (width, height), _hex_to_rgb(P["glass"]) + (90,))
+    base = Image.alpha_composite(base, frost)
+    # rounded mask
+    mask = Image.new("L", (width, height), 0)
+    md = ImageDraw.Draw(mask)
+    md.rounded_rectangle((0, 0, width - 1, height - 1), radius=radius, fill=255)
+    out = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    out.paste(base, (0, 0))
+    out.putalpha(mask)
+    # inner highlight line
+    d = ImageDraw.Draw(out)
+    d.rounded_rectangle((1, 1, width - 2, height - 2), radius=max(1, radius - 1),
+                        outline=_hex_to_rgb(P["accent_glow"]) + (110,), width=1)
+    return _photo_from_pil(out, master)
+
+
+def render_glow_button(master, text, width, height, kind="accent", radius=None, font_size=12):
+    """
+    Antialiased rounded button with outer glow. kind: accent|play|danger|normal
+    Returns (photo_idle, photo_hover) or (None, None) without PIL.
+    """
+    if not HAS_PIL:
+        return None, None
+    P = PAL
+    width, height = max(40, int(width)), max(26, int(height))
+    if radius is None:
+        radius = max(8, height // 2)  # full pill
+    if kind == "play":
+        fill, glow, tcol = P["green"], P["green_glow"], P["on_accent"]
+    elif kind == "danger":
+        fill, glow, tcol = P["red"], P["red_glow"], P["on_accent"]
+    elif kind == "accent":
+        fill, glow, tcol = P["accent"], P["accent_glow"], P["on_accent"]
+    else:
+        # Same color family as the chosen background (slightly lifted, never darker)
+        fill, glow, tcol = P.get("btn", P["surface2"]), P.get("btn_border", P["border"]), P["fg"]
+
+    def make(hover=False):
+        pad = 4
+        W, H = width + pad * 2, height + pad * 2
+        canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        # subtle edge light only (glow kept very low)
+        glow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(glow_layer)
+        strength = (55 if hover else 28) if kind == "play" else (40 if hover else 18)
+        blur = 2.2 if hover else 1.6
+        gr = _hex_to_rgb(glow) + (strength,)
+        gd.rounded_rectangle((pad - 2, pad - 2, pad + width + 1, pad + height + 1),
+                             radius=radius + 2, fill=gr)
+        glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(radius=blur))
+        canvas = Image.alpha_composite(canvas, glow_layer)
+        # body
+        body = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        bd = ImageDraw.Draw(body)
+        face = _mix(fill, "#ffffff", 0.08 if hover else 0.0)
+        bd.rounded_rectangle((pad, pad, pad + width - 1, pad + height - 1),
+                             radius=radius, fill=_hex_to_rgb(face) + (250,),
+                             outline=_hex_to_rgb(glow) + (90,), width=1)
+        # top glass sheen
+        sheen = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(sheen)
+        sd.rounded_rectangle((pad + 2, pad + 2, pad + width - 3, pad + height // 2),
+                             radius=max(1, radius - 2), fill=(255, 255, 255, 22 if hover else 12))
+        body = Image.alpha_composite(body, sheen)
+        # text
+        try:
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", font_size)
+        except Exception:
+            try:
+                font = ImageFont.truetype("arial.ttf", font_size)
+            except Exception:
+                font = ImageFont.load_default()
+        td = ImageDraw.Draw(body)
+        bbox = td.textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        tx = pad + (width - tw) // 2 - bbox[0]
+        ty = pad + (height - th) // 2 - bbox[1]
+        td.text((tx, ty), text, font=font, fill=_hex_to_rgb(tcol) + (255,))
+        canvas = Image.alpha_composite(canvas, body)
+        return _photo_from_pil(canvas, master)
+
+    return make(False), make(True)
+
+
+def widget_bg(w):
+    """The background colour actually showing behind widget `w` (its own bg for tk widgets,
+    its ttk style's background for ttk widgets, else the nearest parent's)."""
+    while w is not None:
+        try:
+            return w.cget("bg")
+        except (tk.TclError, AttributeError):
+            pass
+        try:  # ttk widget: "Card.TFrame" etc. (empty = the class default, e.g. "TFrame")
+            style = w.cget("style") or w.winfo_class()
+            c = ttk.Style(w).lookup(style, "background")
+            if c:
+                return c
+        except (tk.TclError, AttributeError):
+            pass
+        w = getattr(w, "master", None)
+    return PAL.get("bg", "#16181f")
+
+
+class GlowButton(tk.Label):
+    """Rounded glowing pill button for every preset. Uses PIL when available; flat colored fallback otherwise."""
+
+    def __init__(self, master, text="", command=None, kind="normal", width=None, height=32,
+                 font_size=12, padx=16, **kw):
+        self._command = command
+        self._kind = kind or "normal"
+        self._text = text
+        self._font_size = font_size
+        self._padx = padx
+        self._bh = height
+        # Auto width from text length if not given
+        if width is None:
+            width = max(52, int(len(text) * (font_size * 0.62) + padx * 2))
+        self._bw = width
+        top = master.winfo_toplevel()
+        idle, hover = render_glow_button(top, text, width, height, self._kind, font_size=font_size)
+        self._idle, self._hover = idle, hover
+        parent_bg = widget_bg(master)  # the pill's transparent corners must match what is behind it
+        if idle is not None:
+            super().__init__(master, image=idle, bd=0, highlightthickness=0, cursor="hand2", bg=parent_bg)
+            self.bind("<Enter>", lambda e: self.configure(image=self._hover or self._idle))
+            self.bind("<Leave>", lambda e: self.configure(image=self._idle))
+            self.bind("<Button-1>", self._fire)
+        else:
+            P = PAL
+            colors = {
+                "play": (P["green"], P["green_hi"], P["on_accent"]),
+                "danger": (P["red"], P["red_hi"], P["on_accent"]),
+                "accent": (P["accent"], P["accent_hi"], P["on_accent"]),
+                "normal": (P["surface2"], P["border"], P["fg"]),
+            }.get(self._kind, (P["surface2"], P["border"], P["fg"]))
+            super().__init__(master, text=text, bd=0, padx=padx, pady=max(4, height // 5), cursor="hand2",
+                             bg=colors[0], fg=colors[2], font=("", font_size, "bold"),
+                             activebackground=colors[1], activeforeground=colors[2])
+            self.bind("<Button-1>", self._fire)
+
+    def _fire(self, _event=None):
+        if self._command:
+            self._command()
+
+    def refresh_art(self):
+        top = self.winfo_toplevel()
+        idle, hover = render_glow_button(top, self._text, self._bw, self._bh,
+                                         self._kind, font_size=self._font_size)
+        parent_bg = widget_bg(self.master)
+        if idle is not None:
+            self._idle, self._hover = idle, hover
+            self.configure(image=idle, bg=parent_bg)
+        else:
+            P = PAL
+            colors = {
+                "play": (P["green"], P["on_accent"]),
+                "danger": (P["red"], P["on_accent"]),
+                "accent": (P["accent"], P["on_accent"]),
+                "normal": (P["surface2"], P["fg"]),
+            }.get(self._kind, (P["surface2"], P["fg"]))
+            self.configure(bg=colors[0], fg=colors[1])
+
+
+class GlassPanel(tk.Frame):
+    """Rounded glass card: background image + content frame on top."""
+
+    def __init__(self, master, radius=18, pad=12, **kw):
+        bg = PAL.get("bg", "#1b1d25")
+        super().__init__(master, bg=bg, highlightthickness=0, bd=0, **kw)
+        self._radius = radius
+        self._pad = pad
+        self._bg_lbl = tk.Label(self, bd=0, highlightthickness=0, bg=bg)
+        self._bg_lbl.place(x=0, y=0, relwidth=1, relheight=1)
+        self.body = tk.Frame(self, bg=PAL.get("surface", bg), highlightthickness=0, bd=0)
+        self.body.pack(fill="both", expand=True, padx=pad, pady=pad)
+        self.bind("<Configure>", self._redraw)
+        self._photo = None
+
+    def _redraw(self, event=None):
+        w, h = max(self.winfo_width(), 4), max(self.winfo_height(), 4)
+        P = PAL
+        # Content + chrome use the same surface tint so buttons don't sit on a mismatched strip
+        tint = P["surface"]
+        if not HAS_PIL:
+            self.configure(bg=P["bg"])
+            self._bg_lbl.configure(bg=tint, image="")
+            self.body.configure(bg=tint)
+            return
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        # very soft shadow
+        sh = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        sd = ImageDraw.Draw(sh)
+        sd.rounded_rectangle((2, 3, w - 1, h - 1), radius=self._radius, fill=(0, 0, 0, 50))
+        sh = sh.filter(ImageFilter.GaussianBlur(radius=3))
+        img = Image.alpha_composite(img, sh)
+        # flat surface panel (same tint as body) with slight top→bottom smoke
+        # Keep panel the same tint as surface (no darker bottom fade)
+        base = _pil_vertical_gradient((w, h), _hex_to_rgb(tint),
+                                     _hex_to_rgb(_mix(tint, "#ffffff", 0.02))).convert("RGBA")
+        mask = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), radius=self._radius, fill=255)
+        rounded = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        rounded.paste(base, (0, 0))
+        rounded.putalpha(mask)
+        img = Image.alpha_composite(img, rounded)
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle((1, 1, w - 2, h - 2), radius=self._radius,
+                            outline=_hex_to_rgb(P["border"]) + (160,), width=1)
+        self._photo = _photo_from_pil(img, self.winfo_toplevel())
+        self.configure(bg=P["bg"])
+        self._bg_lbl.configure(image=self._photo, bg=P["bg"])
+        self.body.configure(bg=tint)
+        for ch in self.body.winfo_children():
+            try:
+                if isinstance(ch, tk.Label):
+                    ch.configure(bg=tint)
+                elif isinstance(ch, tk.Frame):
+                    ch.configure(bg=tint)
+            except tk.TclError:
+                pass
+
 
 
 # ================================================================= app
@@ -1917,6 +2505,8 @@ class App(tk.Tk):
         self._themed_tk = []      # plain tk widgets that need bg/fg refresh on theme change
         self._names = {}          # mod key -> display name cache
         self._pack_checked = set()  # instances whose pack was already checked this session
+        self._wheel_canvases = []   # canvases that act as scrollable pages (see _scroll_area)
+        self._install_wheel_router()
         self._build()
         self._select_instance(self.cfg["active"])
         self.after(200, self._first_run_hint)
@@ -2059,45 +2649,167 @@ class App(tk.Tk):
     def inst(self):
         return self.cfg["instances"][self.cfg["active"]]
 
+
+    # ---- scrolling
+    def _install_wheel_router(self):
+        """One mouse-wheel handler for the whole app. It scrolls whatever is under the pointer:
+        a list/log that has more to show, otherwise the scrollable page it sits in."""
+        for cls in ("Treeview", "Text", "Listbox", "TCombobox"):
+            for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                try:
+                    self.unbind_class(cls, seq)  # default class handlers would double-scroll / change comboboxes
+                except tk.TclError:
+                    pass
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.bind_all(seq, self._on_wheel)
+
+    def _on_wheel(self, event):
+        num = event.num if isinstance(getattr(event, "num", None), int) else 0
+        delta = getattr(event, "delta", 0) or 0
+        if num == 4:
+            direction, notches = -1, 1
+        elif num == 5:
+            direction, notches = 1, 1
+        elif delta:
+            direction = -1 if delta > 0 else 1
+            notches = max(1, abs(delta) // 120)
+        else:
+            return None
+        try:
+            w = self.winfo_containing(event.x_root, event.y_root)
+            g = self.grab_current()
+        except (KeyError, tk.TclError):
+            return None
+        if g is not None and w is not None and w.winfo_toplevel() is not g.winfo_toplevel():
+            return None  # a dropdown / dialog is open; don't scroll the page behind it
+        while w is not None:
+            try:
+                if isinstance(w, (ttk.Treeview, tk.Text, tk.Listbox)):
+                    lo, hi = w.yview()
+                    if lo > 0.0 or hi < 1.0:
+                        w.yview_scroll(direction * notches * 3, "units")
+                        return "break"
+                elif any(w is c for c in self._wheel_canvases):
+                    lo, hi = w.yview()
+                    if lo > 0.0 or hi < 1.0:
+                        w.yview_scroll(direction * notches * 3, "units")
+                        return "break"
+            except tk.TclError:
+                pass
+            w = getattr(w, "master", None)
+        return None
+
+    def _scroll_area(self, parent, padding=0):
+        """A vertically scrollable page inside `parent`. Returns the frame to put content in.
+        The content stretches to the page width (and height when the window is taller than it)."""
+        P = PAL
+        cv = tk.Canvas(parent, bg=P["bg"], highlightthickness=0, borderwidth=0, yscrollincrement=20)
+        sb = ttk.Scrollbar(parent, orient="vertical", command=cv.yview)
+        cv.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        cv.pack(side="left", fill="both", expand=True)
+        inner = ttk.Frame(cv, padding=padding)
+        wid = cv.create_window((0, 0), window=inner, anchor="nw")
+
+        def sync(_e=None):
+            cv.configure(scrollregion=(0, 0, max(inner.winfo_reqwidth(), cv.winfo_width()),
+                                       max(inner.winfo_reqheight(), cv.winfo_height())))
+            cv.itemconfigure(wid, width=cv.winfo_width(), height=max(inner.winfo_reqheight(), cv.winfo_height()))
+
+        inner.bind("<Configure>", sync)
+        cv.bind("<Configure>", sync)
+        self._wheel_canvases.append(cv)
+        self._themed_tk.append(cv)
+        return inner
+
+    def _gbtn(self, parent, text, command=None, kind="normal", height=32, font_size=12, width=None, **pack):
+        """Create a rounded GlowButton, track it for theme refresh, pack if pack kwargs given."""
+        btn = GlowButton(parent, text=text, command=command, kind=kind, height=height,
+                         font_size=font_size, width=width)
+        self._glow_buttons.append(btn)
+        if pack:
+            btn.pack(**pack)
+        return btn
+
+    def _gpanel(self, parent, radius=18, pad=12, **pack):
+        """Rounded glass card; track for theme refresh."""
+        panel = GlassPanel(parent, radius=radius, pad=pad)
+        self._glass_panels.append(panel)
+        if pack:
+            panel.pack(**pack)
+        return panel
+
     # ---- UI
     def _build(self):
         P = PAL
         ff = self.ff
-        # ---- header: title, launcher self-update, Microsoft account
-        head = ttk.Frame(self, style="Card.TFrame")
-        head.pack(fill="x")
-        hin = ttk.Frame(head, style="Card.TFrame")
-        hin.pack(fill="x", padx=16, pady=10)
-        ttk.Label(hin, text="GH Mod Launcher", style="Title.TLabel").pack(side="left")
-        ttk.Label(hin, text=f"v{LAUNCHER_VERSION}", style="CardMuted.TLabel").pack(side="left", padx=(8, 0), pady=(6, 0))
-        acct = ttk.Frame(hin, style="Card.TFrame")
+        self._glow_buttons = []
+        self._glass_panels = []
+
+        # ---- header: PIL glass strip + outlined title
+        head = tk.Frame(self, bg=P["bg"], highlightthickness=0)
+        head.pack(fill="x", padx=10, pady=(10, 0))
+        self._header_canvas = tk.Canvas(head, height=64, highlightthickness=0, borderwidth=0, bg=P["bg"])
+        self._header_canvas.pack(fill="x")
+        self._themed_tk.append(self._header_canvas)
+
+        def _paint_header(_event=None):
+            c = self._header_canvas
+            w = max(c.winfo_width(), 2)
+            h = max(c.winfo_height(), 2)
+            c.delete("all")
+            photo = render_glass_bar(self, w, h, radius=22)
+            if photo is not None:
+                c.create_image(0, 0, image=photo, anchor="nw", tags="bg")
+                c._glass_photo = photo
+            else:
+                draw_smoke_gradient(c, w, h)
+            draw_outlined_text(c, 22, h // 2 - 2, "GH Mod Launcher",
+                               (ff, 17, "bold"), PAL["fg"], PAL["outline"], tag="title")
+            c.create_text(22 + 190, h // 2 + 1, text=f"v{LAUNCHER_VERSION}",
+                          font=(ff, 9), fill=PAL["muted"], anchor="w", tags="title")
+
+        self._header_canvas.bind("<Configure>", _paint_header)
+        self._paint_header = _paint_header
+
+        hin = tk.Frame(head, bg=P["bg"], highlightthickness=0)
+        hin.place(relx=1.0, rely=0.5, anchor="e", x=-16, y=0)
+        acct = tk.Frame(hin, bg=P["bg"], highlightthickness=0)
         acct.pack(side="right")
         self.auth_status = tk.StringVar(value="Not logged in")
-        ttk.Label(acct, textvariable=self.auth_status, style="Card.TLabel").pack(side="left", padx=(0, 10))
-        ttk.Button(acct, text="Log in with Microsoft", style="Accent.TButton",
-                   command=self.ms_login).pack(side="left", padx=2)
-        ttk.Button(acct, text="Log out", command=self.ms_logout).pack(side="left", padx=2)
-        # launcher self-update controls stay hidden until a newer GitHub release is found
-        update_row = ttk.Frame(hin, style="Card.TFrame")
-        update_row.pack(side="right", padx=16)
+        ttk.Label(acct, textvariable=self.auth_status, style="Muted.TLabel").pack(side="left", padx=(0, 10))
+        gb = GlowButton(acct, text="Log in with Microsoft", command=self.ms_login, kind="accent",
+                        width=180, height=34, font_size=12)
+        gb.pack(side="left", padx=2)
+        self._glow_buttons.append(gb)
+        self._gbtn(acct, "Log out", self.ms_logout, kind="normal", height=32).pack(side="left", padx=2)
+        update_row = tk.Frame(hin, bg=P["bg"], highlightthickness=0)
+        update_row.pack(side="right", padx=12)
         self.update_btn = ttk.Button(update_row, text="Update launcher", style="Accent.TButton",
                                      command=self._do_self_update)
-        self.update_lbl = ttk.Label(update_row, text="", style="CardMuted.TLabel")
+        self.update_lbl = ttk.Label(update_row, text="", style="Muted.TLabel")
         self._update_auth_status()
 
-        # ---- bottom action bar (packed first so it always stays visible)
-        act = ttk.Frame(self, style="Card.TFrame")
-        act.pack(side="bottom", fill="x")
-        ain = ttk.Frame(act, style="Card.TFrame")
-        ain.pack(fill="x", padx=16, pady=10)
-        ttk.Button(ain, text="PLAY", style="Play.TButton", command=self.play).pack(side="right")
-        ttk.Button(ain, text="Stop", command=self.stop_game).pack(side="right", padx=(0, 8))
-        ttk.Button(ain, text="Install / prepare", command=lambda: self.start_run(False)).pack(side="right", padx=(0, 8))
-        ttk.Button(ain, text="Sync to official launcher", command=self.sync_profile).pack(side="right", padx=(0, 8))
-        self.progress = ttk.Progressbar(ain, mode="indeterminate", length=120)
+        # ---- bottom action bar
+        act = tk.Frame(self, bg=P["bg"], highlightthickness=0)
+        act.pack(side="bottom", fill="x", padx=10, pady=10)
+        ain = GlassPanel(act, radius=20, pad=12)
+        ain.pack(fill="x")
+        self._glass_panels.append(ain)
+        ain_body = ain.body
+        play_btn = GlowButton(ain_body, text="PLAY", command=self.play, kind="play",
+                              width=120, height=42, font_size=16)
+        play_btn.pack(side="right")
+        self._glow_buttons.append(play_btn)
+        self._gbtn(ain_body, "Stop", self.stop_game, kind="normal", height=32).pack(side="right", padx=(0, 8))
+        self._gbtn(ain_body, "Install / prepare", lambda: self.start_run(False),
+                   kind="normal", height=32).pack(side="right", padx=(0, 8))
+        self._gbtn(ain_body, "Sync to official launcher", self.sync_profile,
+                   kind="normal", height=32).pack(side="right", padx=(0, 8))
+        self.progress = ttk.Progressbar(ain_body, mode="indeterminate", length=120)
         self.progress.pack(side="left")
         self.status_var = tk.StringVar(value="Ready")
-        ttk.Label(ain, textvariable=self.status_var, style="Status.TLabel").pack(side="left", padx=10)
+        ttk.Label(ain_body, textvariable=self.status_var, style="Status.TLabel").pack(side="left", padx=10)
 
         # ---- profile bar
         bar = ttk.Frame(self)
@@ -2107,9 +2819,9 @@ class App(tk.Tk):
         self.inst_box = ttk.Combobox(bar, textvariable=self.inst_var, state="readonly", width=28)
         self.inst_box.pack(side="left")
         self.inst_box.bind("<<ComboboxSelected>>", lambda _: self._select_instance(self.inst_var.get()))
-        ttk.Button(bar, text="New profile", command=self.new_instance).pack(side="left", padx=(10, 2))
-        ttk.Button(bar, text="Open folder", command=self.open_folder).pack(side="left", padx=2)
-        ttk.Button(bar, text="Delete", style="Danger.TButton", command=self.delete_instance).pack(side="left", padx=2)
+        self._gbtn(bar, "New profile", self.new_instance, kind="normal", height=32).pack(side="left", padx=(10, 4))
+        self._gbtn(bar, "Open folder", self.open_folder, kind="normal", height=32).pack(side="left", padx=2)
+        self._gbtn(bar, "Delete", self.delete_instance, kind="danger", height=32).pack(side="left", padx=2)
 
         # ---- main area: tabs on top, activity log underneath
         paned = ttk.PanedWindow(self, orient="vertical")
@@ -2120,23 +2832,28 @@ class App(tk.Tk):
         paned.add(log_fr, weight=1)
 
         # ================= Mods tab
-        mods = ttk.Frame(nb, padding=12)
-        nb.add(mods, text="Mods")
+        mods_page = ttk.Frame(nb)
+        nb.add(mods_page, text="Mods")
+        mods = self._scroll_area(mods_page, padding=12)
 
-        card = ttk.Frame(mods, style="Card.TFrame", padding=12)
-        card.pack(fill="x")
+        card_p = self._gpanel(mods, radius=18, pad=12, fill="x")
+        card = card_p.body
         ttk.Label(card, text="MODPACK", style="Section.TLabel").pack(anchor="w")
         self.pack_lbl = ttk.Label(card, text="", style="Card.TLabel", font=(ff, 11, "bold"))
         self.pack_lbl.pack(anchor="w", pady=(2, 8))
         prow = ttk.Frame(card, style="Card.TFrame")
         prow.pack(fill="x")
-        ttk.Button(prow, text="Install Fathom Studios pack", command=self.install_fathom_pack).pack(side="left")
-        ttk.Button(prow, text="Install pack from link...", command=self.install_pack_dialog).pack(side="left", padx=6)
-        ttk.Button(prow, text="Check pack update", command=self.check_pack_update).pack(side="left")
-        ttk.Button(prow, text="Reinstall pack", command=self.reinstall_current_pack).pack(side="left", padx=6)
+        self._gbtn(prow, "Install Fathom Studios pack", self.install_fathom_pack,
+                   kind="normal", height=32).pack(side="left")
+        self._gbtn(prow, "Install pack from link...", self.install_pack_dialog,
+                   kind="normal", height=32).pack(side="left", padx=6)
+        self._gbtn(prow, "Check pack update", self.check_pack_update,
+                   kind="normal", height=32).pack(side="left")
+        self._gbtn(prow, "Reinstall pack", self.reinstall_current_pack,
+                   kind="normal", height=32).pack(side="left", padx=6)
 
-        addc = ttk.Frame(mods, style="Card.TFrame", padding=12)
-        addc.pack(fill="x", pady=(10, 0))
+        add_p = self._gpanel(mods, radius=18, pad=12, fill="x", pady=(10, 0))
+        addc = add_p.body
         ttk.Label(addc, text="ADD MOD", style="Section.TLabel").pack(anchor="w")
         arow = ttk.Frame(addc, style="Card.TFrame")
         arow.pack(fill="x", pady=(4, 0))
@@ -2144,9 +2861,48 @@ class App(tk.Tk):
         e = ttk.Entry(arow, textvariable=self.repo_var)
         e.pack(side="left", fill="x", expand=True)
         e.bind("<Return>", lambda _: self.add_repo())
-        ttk.Button(arow, text="Add + install", style="Accent.TButton", command=self.add_repo).pack(side="left", padx=(8, 0))
-        ttk.Label(addc, text="GitHub owner/name or URL  -  Modrinth or CurseForge mod link  -  modrinth:slug / curseforge:slug",
+        self._gbtn(arow, "Add + install", self.add_repo, kind="accent", height=34).pack(side="left", padx=(8, 0))
+        ttk.Label(addc, text="GitHub owner/name or URL  ·  Modrinth / CurseForge link  ·  modrinth:slug / curseforge:slug",
                   style="CardMuted.TLabel").pack(anchor="w", pady=(4, 0))
+
+        # ---- Search mods (Modrinth + CurseForge) with loader filter
+        src_p = self._gpanel(mods, radius=18, pad=12, fill="x", pady=(10, 0))
+        src = src_p.body
+        ttk.Label(src, text="SEARCH MODS", style="Section.TLabel").pack(anchor="w")
+        srow = ttk.Frame(src, style="Card.TFrame")
+        srow.pack(fill="x", pady=(4, 0))
+        self.search_var = tk.StringVar()
+        se = ttk.Entry(srow, textvariable=self.search_var)
+        se.pack(side="left", fill="x", expand=True)
+        se.bind("<Return>", lambda _: self.search_mods())
+        ttk.Label(srow, text="Loader", style="CardMuted.TLabel").pack(side="left", padx=(10, 4))
+        self.search_loader = tk.StringVar(value="profile")
+        ttk.Combobox(srow, textvariable=self.search_loader,
+                     values=("profile", "any") + LOADERS, state="readonly", width=10).pack(side="left")
+        ttk.Label(srow, text="Source", style="CardMuted.TLabel").pack(side="left", padx=(10, 4))
+        self.search_source = tk.StringVar(value="modrinth")
+        ttk.Combobox(srow, textvariable=self.search_source,
+                     values=("modrinth", "curseforge", "both"), state="readonly", width=11).pack(side="left")
+        self._gbtn(srow, "Search", self.search_mods, kind="accent", height=34).pack(side="left", padx=(8, 0))
+        ttk.Label(src, text="Loader “profile” uses this instance’s loader + MC version. CurseForge search needs an API key in Settings.",
+                  style="CardMuted.TLabel").pack(anchor="w", pady=(4, 0))
+        srf = ttk.Frame(src, style="Card.TFrame")
+        srf.pack(fill="x", pady=(6, 0))
+        scols = ("name", "source", "downloads", "description")
+        self.search_tree = ttk.Treeview(srf, columns=scols, show="headings", height=5, selectmode="browse")
+        for c, w in zip(scols, (200, 90, 90, 420)):
+            self.search_tree.heading(c, text=c.capitalize())
+            self.search_tree.column(c, width=w, minwidth=50)
+        srsb = ttk.Scrollbar(srf, orient="vertical", command=self.search_tree.yview)
+        self.search_tree.configure(yscrollcommand=srsb.set)
+        srsb.pack(side="right", fill="y")
+        self.search_tree.pack(side="left", fill="x", expand=True)
+        self.search_tree.bind("<Double-1>", lambda _e: self.install_search_selected())
+        sbtn = ttk.Frame(src, style="Card.TFrame")
+        sbtn.pack(fill="x", pady=(6, 0))
+        self._gbtn(sbtn, "Install selected", self.install_search_selected, kind="accent", height=32).pack(side="left")
+        self._gbtn(sbtn, "Open on website", self.open_search_selected, kind="normal", height=32).pack(side="left", padx=6)
+        self._search_hits = {}  # tree iid -> result dict
 
         lh = ttk.Frame(mods)
         lh.pack(fill="x", pady=(12, 4))
@@ -2175,14 +2931,15 @@ class App(tk.Tk):
 
         b0 = ttk.Frame(mods)
         b0.pack(fill="x", pady=(8, 0))
-        ttk.Button(b0, text="Check updates", style="Accent.TButton", command=self.check_updates).pack(side="left")
-        for text, cmd in (("Versions...", self.show_versions),
-                          ("Update selected", lambda: self.update_mods(True)),
-                          ("Update all", lambda: self.update_mods(False)),
-                          ("Verify hashes", self.verify),
-                          ("Export modlist", self.export_modlist)):
-            ttk.Button(b0, text=text, command=cmd).pack(side="left", padx=(6, 0))
-        ttk.Button(b0, text="Remove selected", style="Danger.TButton", command=self.remove_selected).pack(side="right")
+        self._gbtn(b0, "Check updates", self.check_updates, kind="accent", height=32).pack(side="left")
+        for text, cmd, kind in (
+                ("Versions...", self.show_versions, "normal"),
+                ("Update selected", lambda: self.update_mods(True), "normal"),
+                ("Update all", lambda: self.update_mods(False), "normal"),
+                ("Verify hashes", self.verify, "normal"),
+                ("Export modlist", self.export_modlist, "normal")):
+            self._gbtn(b0, text, cmd, kind=kind, height=28).pack(side="left", padx=(6, 0))
+        self._gbtn(b0, "Remove selected", self.remove_selected, kind="danger", height=32).pack(side="right")
 
         # ================= Settings tab (scrolls on small windows)
         set_tab = ttk.Frame(nb)
@@ -2198,36 +2955,14 @@ class App(tk.Tk):
         sid = sc.create_window((0, 0), window=sform, anchor="nw")
         sform.bind("<Configure>", lambda _e: sc.configure(scrollregion=sc.bbox("all")))
         sc.bind("<Configure>", lambda e: sc.itemconfigure(sid, width=e.width))
-
-        def _wheel(event):
-            if getattr(event, "delta", 0):
-                sc.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            elif getattr(event, "num", None) == 4:
-                sc.yview_scroll(-3, "units")
-            elif getattr(event, "num", None) == 5:
-                sc.yview_scroll(3, "units")
-
-        def _bind_wheel(_event=None):
-            sc.bind_all("<MouseWheel>", _wheel)
-            sc.bind_all("<Button-4>", _wheel)
-            sc.bind_all("<Button-5>", _wheel)
-
-        def _unbind_wheel(_event=None):
-            sc.unbind_all("<MouseWheel>")
-            sc.unbind_all("<Button-4>")
-            sc.unbind_all("<Button-5>")
-
-        for w in (sc, sform):
-            w.bind("<Enter>", _bind_wheel)
-            w.bind("<Leave>", _unbind_wheel)
+        sc.configure(yscrollincrement=20)
+        self._wheel_canvases.append(sc)  # wheel handled by the app-wide router
 
         self.vars = {k: tk.StringVar() for k in EDIT_KEYS}
         self.fullscreen_var = tk.BooleanVar()
         self.version_var = tk.StringVar()
         self.runtime_var = tk.StringVar(value=self.cfg.get("runtime_dir", ""))
         self.official_var = tk.StringVar(value=self.cfg.get("official_launcher_path", ""))
-        self.token_var = tk.StringVar(value=self.cfg.get("token", ""))
-        self.cf_var = tk.StringVar(value=self.cfg.get("curseforge_api_key", ""))
         sections = (
             ("Profile - game", (
                 ("MC version (e.g. 1.20.1)", self.vars["mc_version"], None),
@@ -2249,9 +2984,10 @@ class App(tk.Tk):
                 ("Installed version id", self.version_var, "ro"))),
             ("Global - all profiles", (
                 ("Official launcher path (blank = auto)", self.official_var, None),
-                ("Runtime dir", self.runtime_var, None),
-                ("GitHub token", self.token_var, "secret"),
-                ("CurseForge API key (console.curseforge.com)", self.cf_var, "secret"))))
+                ("Runtime dir", self.runtime_var, None))))
+        self.token_var = tk.StringVar(value=self.cfg.get("token", ""))
+        self.cf_var = tk.StringVar(value=self.cfg.get("curseforge_api_key", ""))
+        self.mr_token_var = tk.StringVar(value=self.cfg.get("modrinth_token", ""))
         for title, rows in sections:
             lf = ttk.LabelFrame(sform, text=f" {title} ", padding=(12, 8))
             lf.pack(fill="x", pady=(0, 12))
@@ -2274,6 +3010,29 @@ class App(tk.Tk):
                 if kind != "ro":
                     var.trace_add("write", lambda *_: self._save_settings())
 
+        # API keys — with clickable links to where you create them
+        keys_lf = ttk.LabelFrame(sform, text=" API keys ", padding=(12, 8))
+        keys_lf.pack(fill="x", pady=(0, 12))
+        keys_lf.columnconfigure(1, weight=1)
+
+        def _key_row(row, label, var, url, link_text):
+            ttk.Label(keys_lf, text=label).grid(row=row, column=0, sticky="w", padx=(0, 14), pady=3)
+            ttk.Entry(keys_lf, textvariable=var, show="*").grid(row=row, column=1, sticky="we", pady=3)
+            link = tk.Label(keys_lf, text=link_text, fg=PAL["accent_hi"], bg=PAL["bg"],
+                            cursor="hand2", font=("", 9, "underline"))
+            link.grid(row=row, column=2, sticky="w", padx=(10, 0))
+            link.bind("<Button-1>", lambda _e, u=url: self._open_url(u))
+            self._themed_tk.append(link)
+            var.trace_add("write", lambda *_: self._save_settings())
+
+        _key_row(0, "GitHub token (optional)", self.token_var, GH_TOKEN_URL, "Get a token →")
+        _key_row(1, "CurseForge API key", self.cf_var, CF_API_KEY_URL, "Get a free key →")
+        _key_row(2, "Modrinth token (optional)", self.mr_token_var, MR_TOKEN_URL, "Account settings →")
+        ttk.Label(keys_lf,
+                  text="CurseForge requires a free key from console.curseforge.com for search and downloads. "
+                       "GitHub / Modrinth tokens are optional (higher limits / private repos).",
+                  style="Muted.TLabel", wraplength=720).grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
         # Appearance — background presets + system color picker
         app_lf = ttk.LabelFrame(sform, text=" Appearance ", padding=(12, 8))
         app_lf.pack(fill="x", pady=(0, 12))
@@ -2287,8 +3046,10 @@ class App(tk.Tk):
                                      bg=PAL["bg"], fg=PAL["fg"])
         self.theme_swatch.pack(side="left", padx=(10, 0))
         self._themed_tk.append(self.theme_swatch)
+        pil_note = ("Glass look ON." if HAS_PIL
+                    else "Glass look offline (auto-install did not run or failed).")
         ttk.Label(app_lf, text="Presets: Snow · Mist · Slate · Charcoal · Midnight. "
-                               "Custom opens the system color wheel.",
+                               f"Custom opens the system color wheel.  {pil_note}",
                   style="Muted.TLabel").grid(row=1, column=1, sticky="w", pady=(0, 2))
 
         ttk.Label(sform, text="Command placeholders: {game_dir} {mods_dir} {mc_version} {loader} {name}",
@@ -2518,7 +3279,11 @@ class App(tk.Tk):
                     w.tag_configure("warn", foreground=P["amber"])
                     w.tag_configure("mc", foreground=P["muted"])
                 elif isinstance(w, tk.Canvas):
-                    w.configure(bg=P["bg"])
+                    # header uses glass smoke; settings canvas uses bg
+                    if w is getattr(self, "_header_canvas", None):
+                        w.configure(bg=P["glass"])
+                    else:
+                        w.configure(bg=P["bg"])
                 else:
                     w.configure(bg=P["bg"], fg=P["fg"])
             except tk.TclError:
@@ -2528,6 +3293,21 @@ class App(tk.Tk):
                 self.theme_swatch.configure(bg=P["bg"], fg=P["fg"])
         except tk.TclError:
             pass
+        try:
+            if hasattr(self, "_paint_header"):
+                self._paint_header()
+        except Exception:
+            pass
+        for gb in getattr(self, "_glow_buttons", []):
+            try:
+                gb.refresh_art()
+            except Exception:
+                pass
+        for gp in getattr(self, "_glass_panels", []):
+            try:
+                gp._redraw()
+            except Exception:
+                pass
 
     def _pick_bg_color(self):
         """Open the system color wheel / picker for a custom background."""
@@ -2552,6 +3332,7 @@ class App(tk.Tk):
         self.cfg["official_launcher_path"] = self.official_var.get().strip()
         self.cfg["token"] = self.token_var.get().strip()
         self.cfg["curseforge_api_key"] = self.cf_var.get().strip()
+        self.cfg["modrinth_token"] = self.mr_token_var.get().strip()
         save_config(self.cfg)
 
     def _select_instance(self, name):
@@ -2901,17 +3682,119 @@ class App(tk.Tk):
             self.log("Pack update skipped. It won't be offered again until there is a newer commit.")
 
     # ---- mod actions
+    def _open_url(self, url):
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception as e:
+            self.log(f"Could not open browser: {e}")
+
+    def _search_loader_mc(self):
+        """Loader + MC version for search filters from the UI combobox."""
+        choice = (self.search_loader.get() or "profile").strip().lower()
+        if choice == "any":
+            return "", ""
+        if choice == "profile":
+            return self.inst.get("loader") or "", (self.inst.get("mc_version") or "").strip()
+        return choice, (self.inst.get("mc_version") or "").strip()
+
+    def search_mods(self):
+        q = self.search_var.get().strip()
+        if not q:
+            messagebox.showinfo("Search", "Type a mod name to search for.", parent=self)
+            return
+        if self.busy:
+            self.log("Busy — wait for the current job.")
+            return
+        src = (self.search_source.get() or "modrinth").strip().lower()
+        if src in ("curseforge", "both") and not cf_key(self.cfg):
+            messagebox.showerror(
+                "CurseForge API key needed",
+                "CurseForge search needs a free API key.\n"
+                "Open Settings → API keys and use “Get a free key →”, then paste it.",
+                parent=self)
+            if src == "curseforge":
+                return
+            src = "modrinth"
+        loader, mc = self._search_loader_mc()
+        self.busy = True
+        self.log(f"Searching '{q}' ({src}, loader={loader or 'any'}, mc={mc or 'any'})...")
+
+        def worker():
+            hits, errors = [], []
+            try:
+                if src in ("modrinth", "both"):
+                    try:
+                        hits.extend(search_modrinth(
+                            q, loader=loader, mc=mc, limit=25,
+                            token=self.cfg.get("modrinth_token", "")))
+                    except Exception as e:
+                        errors.append(f"Modrinth: {e}")
+                if src in ("curseforge", "both"):
+                    try:
+                        hits.extend(search_curseforge(self.cfg, q, loader=loader, mc=mc, limit=25))
+                    except Exception as e:
+                        errors.append(f"CurseForge: {e}")
+            finally:
+                self.busy = False
+                self.after(0, lambda: self._search_done(hits, errors))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _search_done(self, hits, errors):
+        self.search_tree.delete(*self.search_tree.get_children())
+        self._search_hits = {}
+        for i, h in enumerate(hits):
+            iid = f"hit-{i}"
+            self._search_hits[iid] = h
+            dl = h.get("downloads") or 0
+            dl_s = f"{dl/1e6:.1f}M" if dl >= 1e6 else (f"{dl/1e3:.0f}K" if dl >= 1000 else str(dl))
+            self.search_tree.insert("", "end", iid=iid, values=(
+                h.get("name") or "?", h.get("source") or "?", dl_s, h.get("description") or ""))
+        for e in errors:
+            self.log(f"Search error: {e}")
+        self.log(f"Search: {len(hits)} result(s)" + (f" ({len(errors)} source error(s))" if errors else ""))
+        if not hits and not errors:
+            self.log("No mods matched. Try another query or loader filter.")
+
+    def install_search_selected(self):
+        sel = self.search_tree.selection()
+        if not sel:
+            messagebox.showinfo("Install", "Select a search result first.", parent=self)
+            return
+        hit = self._search_hits.get(sel[0])
+        if not hit:
+            return
+        src, ref = hit["source"], hit.get("slug") or hit.get("id")
+        if src == "curseforge" and not cf_key(self.cfg):
+            messagebox.showerror("CurseForge API key needed",
+                                 "Set your CurseForge API key in Settings first.", parent=self)
+            return
+        if self.busy or self.game_proc:
+            self.log("Busy or game running — wait.")
+            return
+        self.busy = True
+        threading.Thread(target=self._add_worker, args=(self.inst, src, ref), daemon=True).start()
+
+    def open_search_selected(self):
+        sel = self.search_tree.selection()
+        if not sel:
+            return
+        hit = self._search_hits.get(sel[0])
+        if hit and hit.get("url"):
+            self._open_url(hit["url"])
+
     def add_repo(self):
         text = self.repo_var.get().strip()
         src, ref = parse_mod_link(text)
         if not src:
-            messagebox.showerror("Bad link", "Use a GitHub owner/name or URL, a Modrinth mod link, "
-                                             "a CurseForge mod link, or modrinth:<slug> / curseforge:<slug>.")
+            messagebox.showerror("Bad link", "Use a GitHub owner/name or URL, a Modrinth / CurseForge mod link, "
+                                             "a direct https://…jar link, or modrinth:<slug> / curseforge:<slug>.")
             return
         if src == "curseforge" and not cf_key(self.cfg):
             messagebox.showerror("CurseForge API key needed",
                                  "CurseForge requires a free API key (console.curseforge.com).\n"
-                                 "Paste it into Settings -> CurseForge API key, then try again.")
+                                 "Paste it into Settings → API keys (click “Get a free key →”).")
             return
         self.repo_var.set("")
         if src == "github":
@@ -2930,6 +3813,10 @@ class App(tk.Tk):
         try:
             key, name = resolve_mod(src, ref, self.cfg)
             self._names[key] = name
+            if src == "url":
+                inst["mods"].setdefault(key, {})["url"] = ref
+                inst["mods"][key]["name"] = name
+                save_config(self.cfg)
             self.log(f"Resolved {src} '{ref}' -> {name}")
         except urllib.error.HTTPError as e:
             self.log(f"[{ref}] {src} lookup failed: HTTP {e.code}")
@@ -2997,9 +3884,12 @@ class App(tk.Tk):
         return n
 
     def install_mod(self, key, inst, auto, parent, seen, vid=None, expect_id=None):
-        """Install/update one mod from its own source (GitHub, Modrinth or CurseForge), plus its dependencies.
+        """Install/update one mod from its own source (GitHub, Modrinth, CurseForge or direct URL).
         vid pins a specific version (GitHub tag / Modrinth version id / CurseForge file id)."""
-        if mod_source(key) != "github":
+        src = mod_source(key)
+        if src == "url":
+            return self._install_url(key, inst, auto, parent)
+        if src != "github":
             return self._install_remote(key, inst, auto, parent, seen, vid, expect_id)
         repo = key
         token = self.cfg["token"]
@@ -3077,6 +3967,46 @@ class App(tk.Tk):
             rb = info.setdefault("required_by", [])
             if parent not in rb:
                 rb.append(parent)
+
+    def _install_url(self, key, inst, auto, parent):
+        """Download a direct .jar URL into the mods folder (no version list; re-add to refresh)."""
+        info0 = inst["mods"].get(key) or {}
+        url = info0.get("url") or ""
+        if not url:
+            # first install: key was just resolved; url lives in worker via _names only — store on info
+            raise RuntimeError("Direct URL mod is missing its download link; remove and add the URL again.")
+        label = info0.get("name") or self._mod_label(key)
+        loader, mods_dir = inst["loader"], inst["mods_dir"]
+        os.makedirs(mods_dir, exist_ok=True)
+        fname = os.path.basename(urllib.parse.urlparse(url).path) or "mod.jar"
+        if not fname.lower().endswith(".jar"):
+            fname += ".jar"
+        dest = os.path.join(mods_dir, fname)
+        self.log(f"[{label}] downloading {fname} from direct URL...")
+        data = fetch_bytes(url, timeout=120)
+        sha = hashlib.sha256(data).hexdigest()
+        tmp = dest + ".part"
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        meta = read_meta(tmp)
+        if meta and not meta_for(meta, loader):
+            self.log(f"[{label}] {fname} is a {'/'.join(meta)} jar, instance is {loader} - rejected")
+            os.remove(tmp)
+            return
+        os.replace(tmp, dest)
+        old = info0.get("file")
+        if old and old != fname:
+            try:
+                os.remove(os.path.join(mods_dir, old))
+            except FileNotFoundError:
+                pass
+        mf = meta_for(meta, loader)
+        info = inst["mods"].setdefault(key, {})
+        info.update(name=label, tag="direct", version_id="", file=fname, sha256=sha, url=url,
+                    ids=sorted(mf.get("ids", [])), loaders=sorted(meta))
+        self._record_role(info, auto, parent)
+        save_config(self.cfg)
+        self.log(f"[{label}] installed {fname}")
 
     def _install_remote(self, key, inst, auto, parent, seen, vid=None, expect_id=None):
         """Modrinth / CurseForge install of one mod + its required dependencies (from the source's own metadata)."""
@@ -3715,6 +4645,7 @@ class App(tk.Tk):
 
 if __name__ == "__main__":
     try:
+        ensure_pillow()  # auto-install Pillow once if missing (glass UI); no manual pip
         App().mainloop()
     except tk.TclError as e:
         sys.exit(f"Tk failed to start (no display?): {e}")
