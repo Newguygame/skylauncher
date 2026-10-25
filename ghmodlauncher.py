@@ -155,7 +155,7 @@ SKIP_DEPS = {"minecraft", "java", "forge", "neoforge", "fabricloader", "fabric-l
              "quilt_loader", "quilt_base", "fml", "javafml", "lowcodefml", "mixinextras"}
 
 # Launcher self-update (GitHub releases). Set "update_repo" in config.json or edit below.
-LAUNCHER_VERSION = "1.2.0"
+LAUNCHER_VERSION = "1.2.1"
 DEFAULT_UPDATE_REPO = "Newguygame/skylauncher"
 
 # Built-in pack: Fathom Studios (NeoForge 1.21.1)
