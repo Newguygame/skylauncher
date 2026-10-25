@@ -156,7 +156,7 @@ SKIP_DEPS = {"minecraft", "java", "forge", "neoforge", "fabricloader", "fabric-l
              "quilt_loader", "quilt_base", "fml", "javafml", "lowcodefml", "mixinextras"}
 
 # Launcher self-update (GitHub releases). Set "update_repo" in config.json or edit below.
-LAUNCHER_VERSION = "1.2.2"
+LAUNCHER_VERSION = "1.2.3"
 DEFAULT_UPDATE_REPO = "Newguygame/skylauncher"
 
 # Built-in pack: Fathom Studios (NeoForge 1.21.1)
@@ -1281,7 +1281,8 @@ def search_curseforge(cfg, query, loader="", mc="", limit=20):
 
 
 def cf_key(cfg):
-    return (cfg.get("curseforge_api_key") or os.environ.get("CURSEFORGE_API_KEY") or "").strip()
+    k = (cfg.get("curseforge_api_key") or os.environ.get("CURSEFORGE_API_KEY") or "").strip()
+    return k.strip("\"'").strip()  # tolerate a pasted-in quote or stray space
 
 
 def cf_json(cfg, path, params=None, body=None):
@@ -1297,8 +1298,18 @@ def cf_json(cfg, path, params=None, body=None):
         data = json.dumps(body).encode("utf-8")
         h["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=h, method="POST" if body is not None else "GET")
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.loads(r.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            shape = f"{len(key)} characters" + ("" if key.startswith("$2") else ", not starting with $2")
+            raise RuntimeError(
+                f"CurseForge rejected the API key (HTTP {e.code}). The saved key is {shape}; CurseForge keys are "
+                "usually 60 characters starting with $2a$10$. Copy the whole key from console.curseforge.com "
+                "-> API keys (not its name or a project id), with no spaces or quotes, and paste it again "
+                "in Settings.") from None
+        raise
 
 
 def parse_mod_link(text):
