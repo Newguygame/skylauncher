@@ -54,7 +54,7 @@ SKIP_DEPS = {"minecraft", "java", "forge", "neoforge", "fabricloader", "fabric-l
              "quilt_loader", "quilt_base", "fml", "javafml", "lowcodefml", "mixinextras"}
 
 # Launcher self-update (GitHub releases). Set "update_repo" in config.json or edit below.
-LAUNCHER_VERSION = "1.1.0"
+LAUNCHER_VERSION = "1.1.1"
 DEFAULT_UPDATE_REPO = "Newguygame/skylauncher"
 
 # Built-in pack: Fathom Studios (NeoForge 1.21.1)
@@ -258,9 +258,11 @@ def fetch_latest_launcher_release(repo, token=""):
         download_url = a.get("browser_download_url") or a.get("url")
     # Fallback: raw file from the tag (common single-file layout)
     if not download_url:
-        for name in (script_name, "ghmodlauncher.py", "launcher.py"):
-            download_url = f"https://raw.githubusercontent.com/{repo}/{tag}/{name}"
-            break
+        # Raw GitHub URLs do not provide a directory listing, so use the canonical
+        # launcher filename first, followed by common alternatives. The download
+        # is validated before it can replace the current script.
+        names = list(dict.fromkeys((script_name, "ghmodlauncher.py", "launcher.py")))
+        download_url = f"https://raw.githubusercontent.com/{repo}/{tag}/{names[0]}"
     return {
         "tag": tag,
         "notes": (rel.get("body") or "")[:500],
@@ -289,12 +291,23 @@ def apply_launcher_update(new_bytes):
     """
     if not new_bytes or len(new_bytes) < 100:
         raise RuntimeError("Downloaded update looks empty or too small")
-    # Sanity: should look like our script
-    head = new_bytes[:200].decode("utf-8", errors="replace")
-    if "ghmodlauncher" not in head.lower() and "GH Mod Launcher" not in head and "import tkinter" not in head:
+    # Sanity-check the downloaded source before replacing the current script.
+    try:
+        source = new_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError("Downloaded update is not valid UTF-8 Python source") from exc
+    head = source[:2000]
+    if "GH Mod Launcher" not in head and "import tkinter" not in source[:10000]:
         raise RuntimeError("Downloaded file does not look like this launcher")
+    try:
+        compile(source, "<launcher-update>", "exec")
+    except SyntaxError as exc:
+        raise RuntimeError(f"Downloaded update has a Python syntax error: {exc}") from exc
     current = os.path.abspath(sys.argv[0])
-    if current.endswith(".py") or os.path.isfile(current):
+    # Never overwrite a packaged executable with Python source. For a normal
+    # script install, update that script in place; for a frozen executable,
+    # write a standalone .py launcher beside it instead.
+    if current.lower().endswith(".py"):
         target = current
     else:
         target = os.path.join(os.path.dirname(current) or ".", "ghmodlauncher.py")
@@ -1281,7 +1294,7 @@ class App(tk.Tk):
 
                 self.after(0, on_found)
             except Exception as e:
-                self.after(0, lambda: self.log(f"Update check failed: {e}"))
+                self.after(0, lambda err=str(e): self.log(f"Update check failed: {err}"))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1322,7 +1335,7 @@ class App(tk.Tk):
                 path = apply_launcher_update(data)
                 self.cfg["skip_update_version"] = ""
                 save_config(self.cfg)
-                self.log(f"Updated to {tag} → {path}")
+                self.after(0, lambda: self.log(f"Updated to {tag} → {path}"))
 
                 def done():
                     self.busy = False
@@ -1337,13 +1350,14 @@ class App(tk.Tk):
 
                 self.after(0, done)
             except Exception as e:
-                self.log(f"Update failed: {e}")
+                error_text = str(e)
+                self.after(0, lambda err=error_text: self.log(f"Update failed: {err}"))
 
                 def err():
                     self.busy = False
                     messagebox.showerror(
                         "Update failed",
-                        f"Could not install the update:\n{e}\n\n"
+                        f"Could not install the update:\n{error_text}\n\n"
                         f"You can download it manually:\n{info.get('html_url', '')}",
                         parent=self)
 
@@ -1417,6 +1431,14 @@ class App(tk.Tk):
         canvas.bind("<Leave>", _unbind_wheel)
         body.bind("<Enter>", _bind_wheel)
         body.bind("<Leave>", _unbind_wheel)
+
+        # Self-update controls stay hidden until a newer GitHub release is found.
+        update_row = ttk.Frame(body)
+        update_row.pack(fill="x", padx=8, pady=(6, 0))
+        self.update_btn = ttk.Button(
+            update_row, text="Update launcher", command=self._do_self_update
+        )
+        self.update_lbl = ttk.Label(update_row, text="")
 
         row = ttk.Frame(body); row.pack(fill="x", padx=8, pady=6)
         ttk.Label(row, text="Profile / Instance:").pack(side="left")
