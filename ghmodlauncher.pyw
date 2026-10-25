@@ -129,7 +129,8 @@ def ensure_pillow(log=None):
     last_err = _PIL_IMPORT_ERROR or "unknown error"
     for cmd in pip_cmds:
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300,
+                               creationflags=0x08000000 if os.name == "nt" else 0)  # no console flash
             if _try_import_pil():
                 _log("Glass UI: Pillow ready — rounded glass + glowing buttons enabled.")
                 return True
@@ -409,6 +410,8 @@ def fetch_latest_launcher_release(repo, token=""):
     assets = rel.get("assets") or []
     py_assets = [a for a in assets if a.get("name", "").endswith(".py")]
     script_name = os.path.basename(os.path.abspath(sys.argv[0])) if sys.argv else "ghmodlauncher.py"
+    if script_name.lower().endswith(".pyw"):  # run as .pyw (no console), but the repo ships the .py name
+        script_name = script_name[:-1]
     for a in py_assets:
         if a.get("name") == script_name:
             download_url = a.get("browser_download_url") or a.get("url")
@@ -467,7 +470,7 @@ def apply_launcher_update(new_bytes):
     # Never overwrite a packaged executable with Python source. For a normal
     # script install, update that script in place; for a frozen executable,
     # write a standalone .py launcher beside it instead.
-    if current.lower().endswith(".py"):
+    if current.lower().endswith((".py", ".pyw")):
         target = current
     else:
         target = os.path.join(os.path.dirname(current) or ".", "ghmodlauncher.py")
@@ -4524,7 +4527,8 @@ class App(tk.Tk):
         try:
             subprocess.Popen(shlex.split(cmd, posix=(OS_NAME != "windows")),
                              env={**os.environ, **parse_env_vars(i.get("env_vars")),
-                                  "GHML_GAME_DIR": self._game_dir()})
+                                  "GHML_GAME_DIR": self._game_dir()},
+                             creationflags=NO_WINDOW)
             self.log(f"Launched external: {cmd}")
         except Exception as e:
             self.log(f"Launch failed: {e}")
@@ -4619,7 +4623,8 @@ class App(tk.Tk):
             cmd = find_official_launcher(self.cfg)
             if not cmd:
                 raise RuntimeError("Official Minecraft launcher not found.")
-            subprocess.Popen(cmd, env=env, **({"start_new_session": True} if OS_NAME != "windows" else {}))
+            subprocess.Popen(cmd, env=env, **({"start_new_session": True} if OS_NAME != "windows"
+                                              else {"creationflags": NO_WINDOW}))
             log(f"Started the official launcher. Pick the profile 'GHML: {name}' and press Play.")
         except Exception as e:
             self.log(f"ERROR: {e}")
@@ -4643,7 +4648,38 @@ class App(tk.Tk):
             self.log(f"Profile sync failed: {e}")
 
 
+def _no_console():
+    """Windows: don't keep a console window attached to the launcher.
+    If we were started with python.exe (what opens a console), restart under pythonw.exe and exit,
+    so the window closes (or, if you ran us from your own terminal, the prompt comes back).
+    With no console at all, send print()/tracebacks to ~/.ghmodlauncher/launcher.log.
+    Set GHML_NO_RELAUNCH=1 to keep the console, e.g. for debugging."""
+    if OS_NAME == "windows" and not os.environ.get("GHML_NO_RELAUNCH"):
+        exe = sys.executable or ""
+        if os.path.basename(exe).lower() in ("python.exe", "python3.exe"):
+            cands = [os.path.join(os.path.dirname(exe), "pythonw.exe"), shutil.which("pythonw")]
+            for pyw in dict.fromkeys(c for c in cands if c):
+                try:
+                    subprocess.Popen([pyw, os.path.abspath(sys.argv[0])] + sys.argv[1:],
+                                     env={**os.environ, "GHML_NO_RELAUNCH": "1"},
+                                     creationflags=0x00000008 | 0x00000200)  # DETACHED | NEW_PROCESS_GROUP
+                except OSError:
+                    continue
+                sys.exit(0)
+    if sys.stdout is None or sys.stderr is None:
+        try:
+            os.makedirs(BASE, exist_ok=True)
+            logf = open(os.path.join(BASE, "launcher.log"), "a", encoding="utf-8", buffering=1)
+            if sys.stdout is None:
+                sys.stdout = logf
+            if sys.stderr is None:
+                sys.stderr = logf
+        except OSError:
+            pass
+
+
 if __name__ == "__main__":
+    _no_console()
     try:
         ensure_pillow()  # auto-install Pillow once if missing (glass UI); no manual pip
         App().mainloop()
