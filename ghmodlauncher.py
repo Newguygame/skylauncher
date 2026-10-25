@@ -10,9 +10,9 @@ Packs:    installs full modpacks from GitHub repos that contain mods/ (+ config/
           via zipball download. Built-in one-click install for Fathom Studios pack.
 Runtime:  installs vanilla + Fabric / Quilt / Forge / NeoForge, fetches Mojang's Java runtime,
           downloads libraries + assets, builds the command line and starts the game.
-Auth:     Microsoft account (device-code flow) for online play, or offline username.
-          Tokens refresh automatically. Prefer "Sync to official launcher" if you want
-          the official launcher's own Microsoft login instead.
+Auth:     Microsoft account (device-code flow) required to play; no offline mode.
+          Tokens refresh automatically. Or set a profile's Launcher to "official" to
+          hand it to the official Minecraft launcher (its own Microsoft login).
 Profiles: Multiple independent instances (MC version, loader, mods, settings).
 """
 import hashlib
@@ -27,7 +27,6 @@ import sys
 import tempfile
 import threading
 import time
-import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -54,7 +53,7 @@ SKIP_DEPS = {"minecraft", "java", "forge", "neoforge", "fabricloader", "fabric-l
              "quilt_loader", "quilt_base", "fml", "javafml", "lowcodefml", "mixinextras"}
 
 # Launcher self-update (GitHub releases). Set "update_repo" in config.json or edit below.
-LAUNCHER_VERSION = "1.1.4"
+LAUNCHER_VERSION = "1.1.5"
 DEFAULT_UPDATE_REPO = "Newguygame/skylauncher"
 
 # Built-in pack: Fathom Studios (NeoForge 1.21.1)
@@ -129,14 +128,23 @@ def default_instance(name, mc="", loader="fabric"):
         "mods": {},             # repo -> {tag, file, sha256, ids, loaders, auto, required_by}
         "pack_repo": "",        # if set, instance was installed from this GitHub pack
         "pack_ref": "",
+        # per-instance overrides (added in 1.1.5)
+        "window_width": "",     # blank = game default
+        "window_height": "",
+        "fullscreen": False,
+        "game_args": "",        # extra Minecraft (game) arguments
+        "env_vars": "",         # KEY=VALUE;KEY2=VALUE2 passed to the game / pre-launch command
+        "pre_launch_cmd": "",   # runs in the game dir before launch; non-zero exit aborts
+        "launcher": "builtin",  # "builtin" (this app) or "official" (Mojang's Minecraft launcher)
     }
 
 
 def load_config():
     cfg = {"token": "", "active": "Default", "instances": {}, "dep_map": {},
-           "username": "Player", "runtime_dir": os.path.join(BASE, "runtime"),
+           "runtime_dir": os.path.join(BASE, "runtime"),
            "msa_client_id": "", "account": None,
-           "update_repo": DEFAULT_UPDATE_REPO, "skip_update_version": ""}
+           "update_repo": DEFAULT_UPDATE_REPO, "skip_update_version": "",
+           "official_launcher_path": ""}
     try:
         with open(CONFIG_PATH) as f:
             cfg.update(json.load(f))
@@ -516,7 +524,7 @@ def build_account_from_msa(msa_tok, client_id, log):
 def ensure_fresh_account(cfg, log):
     """
     Return a usable account dict for launching, refreshing tokens if needed.
-    Returns None if no Microsoft account is stored (caller uses offline).
+    Returns None if no Microsoft account is stored or the refresh failed.
     """
     acc = cfg.get("account")
     if not acc or acc.get("type") != "msa":
@@ -542,13 +550,12 @@ def ensure_fresh_account(cfg, log):
             msa_tok["refresh_token"] = acc["msa_refresh_token"]
         new_acc = build_account_from_msa(msa_tok, client_id, log)
         cfg["account"] = new_acc
-        cfg["username"] = new_acc["name"]
         save_config(cfg)
         log(f"Logged in as {new_acc['name']}")
         return new_acc
     except Exception as e:
         log(f"Token refresh failed: {e}")
-        log("Falling back to offline mode for this launch.")
+        log("Please log in with Microsoft again.")
         return None
 
 
@@ -825,6 +832,34 @@ def official_profiles_path():
     else:
         root = os.path.expanduser("~/.minecraft")
     return os.path.join(root, "launcher_profiles.json")
+
+
+def find_official_launcher(cfg):
+    """Command (list) that starts the official Minecraft launcher, or None if not found.
+    A path set in config ("official_launcher_path") always wins."""
+    custom = (cfg.get("official_launcher_path") or "").strip().strip('"')
+    if custom:
+        if OS_NAME == "osx" and custom.endswith(".app"):
+            return ["open", custom]
+        return [custom] if os.path.exists(custom) else None
+    if OS_NAME == "windows":
+        for env in ("ProgramFiles(x86)", "ProgramFiles"):
+            exe = os.path.join(os.environ.get(env, ""), "Minecraft Launcher", "MinecraftLauncher.exe")
+            if os.path.exists(exe):
+                return [exe]
+        # Microsoft Store / Xbox app edition (best effort)
+        store = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Packages",
+                             "Microsoft.4297127D64EC6_8wekyb3d8bbwe")
+        if os.path.isdir(store):
+            return ["explorer.exe", r"shell:AppsFolder\Microsoft.4297127D64EC6_8wekyb3d8bbwe!Minecraft"]
+        return None
+    if OS_NAME == "osx":
+        for app in ("/Applications/Minecraft.app", os.path.expanduser("~/Applications/Minecraft.app")):
+            if os.path.exists(app):
+                return ["open", app]
+        return None
+    exe = shutil.which("minecraft-launcher")
+    return [exe] if exe else None
 
 
 # ================================================================= runtime: downloads
@@ -1222,15 +1257,23 @@ def ensure_loader(inst, rt, java, log):
     return vid
 
 
-def offline_uuid(name):
-    h = bytearray(hashlib.md5(("OfflinePlayer:" + name).encode()).digest())
-    h[6] = (h[6] & 0x0F) | 0x30
-    h[8] = (h[8] & 0x3F) | 0x80
-    return str(uuid.UUID(bytes=bytes(h)))
-
-
 # ================================================================= app
-EDIT_KEYS = ("mc_version", "loader", "loader_version", "mods_dir", "java_path", "memory_mb", "jvm_args", "launch_cmd")
+LAUNCHERS = ("builtin", "official")
+EDIT_KEYS = ("mc_version", "loader", "loader_version", "mods_dir", "java_path", "memory_mb", "jvm_args",
+             "launch_cmd", "window_width", "window_height", "game_args", "env_vars",
+             "pre_launch_cmd", "launcher")
+RAW_KEYS = ("mods_dir", "launch_cmd", "game_args", "env_vars", "pre_launch_cmd")  # saved without strip()
+
+
+def parse_env_vars(text):
+    """'A=1;B=two words' (or newline separated) -> {'A': '1', 'B': 'two words'}."""
+    out = {}
+    for part in re.split(r"[;\n]", text or ""):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            if k.strip():
+                out[k.strip()] = v.strip()
+    return out
 
 
 class App(tk.Tk):
@@ -1489,7 +1532,7 @@ class App(tk.Tk):
         # Account / auth bar
         auth = ttk.Frame(body); auth.pack(fill="x", padx=8, pady=4)
         ttk.Label(auth, text="Account:").pack(side="left")
-        self.auth_status = tk.StringVar(value="Offline")
+        self.auth_status = tk.StringVar(value="Not logged in")
         ttk.Label(auth, textvariable=self.auth_status, width=28).pack(side="left", padx=6)
         ttk.Button(auth, text="Log in with Microsoft", command=self.ms_login).pack(side="left", padx=2)
         ttk.Button(auth, text="Log out", command=self.ms_logout).pack(side="left", padx=2)
@@ -1497,9 +1540,10 @@ class App(tk.Tk):
 
         s = ttk.LabelFrame(body, text="Settings"); s.pack(fill="x", padx=8, pady=6)
         self.vars = {k: tk.StringVar() for k in EDIT_KEYS}
+        self.fullscreen_var = tk.BooleanVar()
         self.version_var = tk.StringVar()
-        self.user_var = tk.StringVar(value=self.cfg.get("username", "Player"))
         self.runtime_var = tk.StringVar(value=self.cfg.get("runtime_dir", ""))
+        self.official_var = tk.StringVar(value=self.cfg.get("official_launcher_path", ""))
         self.token_var = tk.StringVar(value=self.cfg.get("token", ""))
         rows = (("MC version (e.g. 1.20.1)", self.vars["mc_version"], None),
                 ("Loader", self.vars["loader"], "loader"),
@@ -1509,14 +1553,25 @@ class App(tk.Tk):
                 ("Memory (MB)", self.vars["memory_mb"], None),
                 ("Extra JVM args", self.vars["jvm_args"], None),
                 ("External launch cmd (blank = built-in)", self.vars["launch_cmd"], None),
+                ("Game args (extra Minecraft args)", self.vars["game_args"], None),
+                ("Window width (blank = default)", self.vars["window_width"], None),
+                ("Window height (blank = default)", self.vars["window_height"], None),
+                ("Fullscreen", self.fullscreen_var, "check"),
+                ("Env vars (KEY=VAL;KEY2=VAL2)", self.vars["env_vars"], None),
+                ("Pre-launch cmd (runs before game)", self.vars["pre_launch_cmd"], None),
+                ("Launcher (builtin / official Minecraft)", self.vars["launcher"], "launcher"),
                 ("Installed version id", self.version_var, "ro"),
-                ("Offline username (used if not logged in)", self.user_var, None),
+                ("Official launcher path (global, blank = auto)", self.official_var, None),
                 ("Runtime dir (global)", self.runtime_var, None),
                 ("GitHub token (global)", self.token_var, "secret"))
         for r, (lbl, var, kind) in enumerate(rows):
             ttk.Label(s, text=lbl).grid(row=r, column=0, sticky="w", padx=4, pady=1)
             if kind == "loader":
                 w = ttk.Combobox(s, textvariable=var, values=LOADERS, state="readonly", width=12)
+            elif kind == "launcher":
+                w = ttk.Combobox(s, textvariable=var, values=LAUNCHERS, state="readonly", width=12)
+            elif kind == "check":
+                w = ttk.Checkbutton(s, variable=var)
             elif kind == "ro":
                 w = ttk.Entry(s, textvariable=var, state="readonly", width=80)
             elif kind == "secret":
@@ -1527,7 +1582,8 @@ class App(tk.Tk):
             if kind != "ro":
                 var.trace_add("write", lambda *_: self._save_settings())
         s.columnconfigure(1, weight=1)
-        ttk.Label(s, text="External cmd placeholders: {game_dir} {mods_dir} {mc_version} {loader} {name}",
+        ttk.Label(s, text="Rows down to 'Launcher' are per-profile. "
+                          "Cmd placeholders: {game_dir} {mods_dir} {mc_version} {loader} {name}",
                   foreground="gray").grid(row=len(rows), column=1, sticky="w", padx=4)
 
         self.log_box = tk.Text(body, height=10, state="disabled")
@@ -1552,10 +1608,8 @@ class App(tk.Tk):
         acc = self.cfg.get("account")
         if acc and acc.get("type") == "msa" and acc.get("name"):
             self.auth_status.set(f"Microsoft: {acc['name']}")
-            if hasattr(self, "user_var"):
-                self.user_var.set(acc["name"])
         else:
-            self.auth_status.set("Offline")
+            self.auth_status.set("Not logged in")
 
     def _show_device_code_dialog(self, uri, code, expires_min):
         """Modal with code, copy button, and clickable link."""
@@ -1654,7 +1708,6 @@ class App(tk.Tk):
                     cancel_flag=lambda: cancel["flag"])
                 acc = build_account_from_msa(msa_tok, client_id, self.log)
                 self.cfg["account"] = acc
-                self.cfg["username"] = acc["name"]
                 save_config(self.cfg)
                 self.log(f"Logged in as {acc['name']} ({acc['uuid']})")
                 self.after(0, self._update_auth_status)
@@ -1678,16 +1731,17 @@ class App(tk.Tk):
         self.cfg["account"] = None
         save_config(self.cfg)
         self._update_auth_status()
-        self.log("Logged out — launches will use offline mode.")
+        self.log("Logged out — log in again to play.")
 
     def _save_settings(self):
         if self._loading:
             return
         i = self.inst
         for k, v in self.vars.items():
-            i[k] = v.get().strip() if k not in ("mods_dir", "launch_cmd") else v.get()
-        self.cfg["username"] = self.user_var.get().strip() or "Player"
+            i[k] = v.get().strip() if k not in RAW_KEYS else v.get()
+        i["fullscreen"] = bool(self.fullscreen_var.get())
         self.cfg["runtime_dir"] = self.runtime_var.get().strip()
+        self.cfg["official_launcher_path"] = self.official_var.get().strip()
         self.cfg["token"] = self.token_var.get().strip()
         save_config(self.cfg)
 
@@ -1697,7 +1751,8 @@ class App(tk.Tk):
         self.inst_box["values"] = list(self.cfg["instances"])
         self.inst_var.set(name)
         for k, v in self.vars.items():
-            v.set(self.inst.get(k, ""))
+            v.set(self.inst.get(k, "") or ("builtin" if k == "launcher" else ""))
+        self.fullscreen_var.set(bool(self.inst.get("fullscreen", False)))
         self.version_var.set(self.inst.get("version_id", ""))
         self._loading = False
         save_config(self.cfg)
@@ -2053,7 +2108,7 @@ class App(tk.Tk):
         self.log("Verify finished: " + ("all good." if not bad else f"{bad} problem(s)."))
 
     # ---- running the game
-    def prepare(self, inst, name):
+    def prepare(self, inst, name, run=True):
         """Install vanilla + loader + libs + assets + Java. Returns (command list, cwd)."""
         log = self.log
         rt = self.cfg["runtime_dir"] or os.path.join(BASE, "runtime")
@@ -2096,22 +2151,19 @@ class App(tk.Tk):
             else inst["mods_dir"]
         os.makedirs(os.path.join(game_dir, "mods"), exist_ok=True)
 
-        # Online (Microsoft) or offline auth
+        if not run:  # install/prepare only; no login needed
+            return None, game_dir
+
+        # Microsoft auth is required
         acc = ensure_fresh_account(self.cfg, log)
-        if acc:
-            user = acc["name"]
-            auth_uuid = acc["uuid"]
-            access_token = acc["access_token"]
-            user_type = "msa"
-            xuid = acc.get("xuid") or ""
-            log(f"Launching online as {user}")
-        else:
-            user = self.cfg.get("username") or "Player"
-            auth_uuid = offline_uuid(user)
-            access_token = "0"
-            user_type = "legacy"
-            xuid = ""
-            log(f"Launching offline as {user}")
+        if not acc:
+            raise RuntimeError("Not logged in. Press 'Log in with Microsoft' first.")
+        user = acc["name"]
+        auth_uuid = acc["uuid"]
+        access_token = acc["access_token"]
+        user_type = "msa"
+        xuid = acc.get("xuid") or ""
+        log(f"Launching as {user}")
 
         cp = CP_SEP.join([os.path.join(rt, "libraries", l["path"]) for l in libs] + [jar])
         v = {"auth_player_name": user, "version_name": jar_id, "game_directory": game_dir,
@@ -2119,7 +2171,7 @@ class App(tk.Tk):
              "auth_uuid": auth_uuid, "auth_access_token": access_token, "auth_session": access_token,
              "clientid": "", "auth_xuid": xuid, "user_type": user_type, "user_properties": "{}",
              "version_type": ver.get("type", "release"), "natives_directory": ndir,
-             "launcher_name": "ghmodlauncher", "launcher_version": "1.0", "classpath": cp,
+             "launcher_name": "ghmodlauncher", "launcher_version": LAUNCHER_VERSION, "classpath": cp,
              "classpath_separator": CP_SEP, "library_directory": os.path.join(rt, "libraries"),
              "primary_jar": jar, "primary_jar_name": os.path.basename(jar), "game_assets": game_assets}
 
@@ -2137,16 +2189,25 @@ class App(tk.Tk):
             mem = int(inst["memory_mb"])
         except ValueError:
             mem = 4096
+        extra_game = []
+        w, h = (inst.get("window_width") or "").strip(), (inst.get("window_height") or "").strip()
+        if w.isdigit() and h.isdigit():
+            extra_game += ["--width", w, "--height", h]
+        if inst.get("fullscreen"):
+            extra_game.append("--fullscreen")
+        extra_game += shlex.split(inst.get("game_args") or "", posix=(OS_NAME != "windows"))
         cmd = [java, f"-Xmx{mem}M"] + shlex.split(inst["jvm_args"], posix=(OS_NAME != "windows"))
         if log_arg:
             cmd.append(subst(log_arg, v))
-        cmd += [subst(a, v) for a in jvm] + [ver["mainClass"]] + [subst(a, v) for a in game]
+        cmd += [subst(a, v) for a in jvm] + [ver["mainClass"]] + [subst(a, v) for a in game] + extra_game
         return cmd, game_dir
 
     def play(self):
         i = self.inst
         if i["launch_cmd"].strip():
             self._external_launch()
+        elif i.get("launcher") == "official":
+            self.start_official()
         else:
             self.start_run(True)
 
@@ -2160,18 +2221,35 @@ class App(tk.Tk):
 
     def _run_worker(self, inst, name, run):
         try:
-            cmd, cwd = self.prepare(inst, name)
+            cmd, cwd = self.prepare(inst, name, run)
             if not run:
                 self.log("Ready. Press PLAY.")
                 return
+            env = {**os.environ, **parse_env_vars(inst.get("env_vars"))}
+            self._run_pre_launch(inst, name, cwd, env)
             self.log("Starting game...")
-            self.game_proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                              text=True, errors="replace", creationflags=NO_WINDOW)
+            self.game_proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                              stderr=subprocess.STDOUT, text=True, errors="replace",
+                                              creationflags=NO_WINDOW)
             threading.Thread(target=self._pump, args=(self.game_proc,), daemon=True).start()
         except Exception as e:
             self.log(f"ERROR: {e}")
         finally:
             self.busy = False
+
+    def _run_pre_launch(self, inst, name, cwd, env):
+        pre = (inst.get("pre_launch_cmd") or "").strip()
+        if not pre:
+            return
+        for k, val in (("{game_dir}", cwd), ("{mods_dir}", inst["mods_dir"]),
+                       ("{mc_version}", inst["mc_version"]), ("{loader}", inst["loader"]),
+                       ("{name}", name)):
+            pre = pre.replace(k, val)
+        self.log(f"Running pre-launch: {pre}")
+        r = subprocess.run(shlex.split(pre, posix=(OS_NAME != "windows")), cwd=cwd, env=env,
+                           creationflags=NO_WINDOW)
+        if r.returncode != 0:
+            raise RuntimeError(f"Pre-launch command exited with code {r.returncode}; not starting.")
 
     def _pump(self, proc):
         for line in proc.stdout:
@@ -2192,25 +2270,113 @@ class App(tk.Tk):
             cmd = cmd.replace(k, v)
         try:
             subprocess.Popen(shlex.split(cmd, posix=(OS_NAME != "windows")),
-                             env={**os.environ, "GHML_GAME_DIR": self._game_dir()})
+                             env={**os.environ, **parse_env_vars(i.get("env_vars")),
+                                  "GHML_GAME_DIR": self._game_dir()})
             self.log(f"Launched external: {cmd}")
         except Exception as e:
             self.log(f"Launch failed: {e}")
 
-    def sync_profile(self):
-        """Add/update a profile in the official launcher (gives you real Microsoft login)."""
-        i, name = self.inst, self.cfg["active"]
+    def _check_official_ready(self):
+        """Main-thread checks shared by 'Sync' and official-launcher play. Returns official root or None."""
         path = official_profiles_path()
         if not os.path.exists(path):
             messagebox.showerror("Not found", f"{path} doesn't exist. Run the official launcher once first.")
-            return
+            return None
         root = os.path.dirname(path)
-        if os.path.abspath(self.cfg["runtime_dir"]) != os.path.abspath(root):
-            if messagebox.askyesno("Runtime dir",
-                                   f"The official launcher only sees loaders installed in:\n{root}\n\n"
-                                   "Switch the runtime dir to that folder now? Afterwards press "
-                                   "'Install / prepare', then sync again."):
-                self.runtime_var.set(root)
+        if os.path.abspath(self.cfg["runtime_dir"] or os.path.join(BASE, "runtime")) != os.path.abspath(root):
+            if not messagebox.askyesno("Runtime dir",
+                                       f"The official launcher only sees loaders installed in:\n{root}\n\n"
+                                       "Switch the runtime dir to that folder now?"):
+                return None
+            self.runtime_var.set(root)  # saved via trace
+            self.cfg["runtime_dir"] = root
+        return root
+
+    def _write_official_profile(self, inst, name, game_dir):
+        """Add/update this instance as a profile in the official launcher's launcher_profiles.json."""
+        path = official_profiles_path()
+        shutil.copy2(path, path + ".ghml.bak")
+        with open(path) as f:
+            data = json.load(f)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        profs = data.setdefault("profiles", {})
+        key = "ghml-" + re.sub(r"\W+", "-", name.lower())
+        p = profs.get(key, {"created": now})
+        try:
+            mem = int(inst["memory_mb"])
+        except ValueError:
+            mem = 4096
+        p.update({"name": f"GHML: {name}", "type": "custom", "icon": "Furnace", "lastUsed": now,
+                  "gameDir": game_dir, "lastVersionId": inst["version_id"],
+                  "javaArgs": f"-Xmx{mem}M " + (inst.get("jvm_args") or "").strip()})
+        if inst.get("java_path"):
+            p["javaDir"] = inst["java_path"]
+        else:
+            p.pop("javaDir", None)
+        w, h = (inst.get("window_width") or "").strip(), (inst.get("window_height") or "").strip()
+        if w.isdigit() and h.isdigit():
+            p["resolution"] = {"width": int(w), "height": int(h)}
+        else:
+            p.pop("resolution", None)
+        profs[key] = p
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+        self.log(f"Profile 'GHML: {name}' written (backup: {path}.ghml.bak).")
+
+    def start_official(self):
+        """PLAY via the official Minecraft launcher: install loader, write profile, start launcher."""
+        if self.busy or self.game_proc:
+            self.log("Busy or game already running.")
+            return
+        self._save_settings()
+        if not self.inst["mc_version"].strip():
+            messagebox.showinfo("MC version", "Set a Minecraft version first.")
+            return
+        if not find_official_launcher(self.cfg):
+            messagebox.showerror("Launcher not found",
+                                 "Couldn't find the official Minecraft launcher.\n"
+                                 "Set 'Official launcher path' in Settings.")
+            return
+        if not self._check_official_ready():
+            return
+        if not messagebox.askyesno("Close the launcher",
+                                   "The official launcher must be closed or it may overwrite the profile. "
+                                   "Continue?"):
+            return
+        self.busy = True
+        threading.Thread(target=self._official_worker, args=(self.inst, self.cfg["active"]), daemon=True).start()
+
+    def _official_worker(self, inst, name):
+        try:
+            log = self.log
+            rt = self.cfg["runtime_dir"] or os.path.join(BASE, "runtime")
+            mc = inst["mc_version"].strip()
+            os.makedirs(rt, exist_ok=True)
+            log(f"Preparing '{name}' for the official launcher: {inst['loader']} on Minecraft {mc}")
+            vjson = ensure_vanilla(rt, mc, log)
+            java = resolve_java(inst, rt, vjson, log)
+            vid = ensure_loader(inst, rt, java, log)
+            save_config(self.cfg)
+            self.after(0, lambda: self._set_version_var(vid) if self.cfg["active"] == name else None)
+            game_dir = _game_dir_from_mods(inst["mods_dir"])
+            os.makedirs(os.path.join(game_dir, "mods"), exist_ok=True)
+            self._write_official_profile(inst, name, game_dir)
+            env = {**os.environ, **parse_env_vars(inst.get("env_vars"))}
+            self._run_pre_launch(inst, name, game_dir, env)
+            cmd = find_official_launcher(self.cfg)
+            if not cmd:
+                raise RuntimeError("Official Minecraft launcher not found.")
+            subprocess.Popen(cmd, env=env, **({"start_new_session": True} if OS_NAME != "windows" else {}))
+            log(f"Started the official launcher. Pick the profile 'GHML: {name}' and press Play.")
+        except Exception as e:
+            self.log(f"ERROR: {e}")
+        finally:
+            self.busy = False
+
+    def sync_profile(self):
+        """Add/update a profile in the official launcher (gives you real Microsoft login)."""
+        i, name = self.inst, self.cfg["active"]
+        if not self._check_official_ready():
             return
         if not i["version_id"]:
             messagebox.showinfo("Not installed", "Press 'Install / prepare' first so the loader exists.")
@@ -2218,19 +2384,8 @@ class App(tk.Tk):
         if not messagebox.askyesno("Close the launcher", "The official launcher must be closed or it may overwrite this. Continue?"):
             return
         try:
-            shutil.copy2(path, path + ".ghml.bak")
-            with open(path) as f:
-                data = json.load(f)
-            now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
-            profs = data.setdefault("profiles", {})
-            key = "ghml-" + re.sub(r"\W+", "-", name.lower())
-            p = profs.get(key, {"created": now})
-            p.update({"name": f"GHML: {name}", "type": "custom", "icon": "Furnace", "lastUsed": now,
-                      "gameDir": self._game_dir(), "lastVersionId": i["version_id"]})
-            profs[key] = p
-            with open(path, "w") as f:
-                json.dump(data, f, indent=2)
-            self.log(f"Profile 'GHML: {name}' written (backup: {path}.ghml.bak). Open the official launcher and pick it.")
+            self._write_official_profile(i, name, self._game_dir())
+            self.log("Open the official launcher and pick the profile.")
         except Exception as e:
             self.log(f"Profile sync failed: {e}")
 
