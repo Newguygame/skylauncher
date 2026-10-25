@@ -21,8 +21,12 @@ Auth:     Microsoft account (device-code flow) required to play; no offline mode
           Tokens refresh automatically. Or set a profile's Launcher to "official" to
           hand it to the official Minecraft launcher (its own Microsoft login).
 Profiles: Multiple independent instances (MC version, loader, mods, settings).
+Game data: every instance owns a game folder (saves/, options.txt, servers.dat, config/, resourcepacks/,
+          screenshots/, logs/ ...). "Worlds & settings" lists, backs up, imports, copies and deletes worlds,
+          and copies settings between instances. Pack installs/updates never overwrite worlds or options.
 """
 import base64
+import gzip
 import hashlib
 import io
 import json
@@ -31,6 +35,7 @@ import platform
 import re
 import shlex
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -40,7 +45,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox, simpledialog, filedialog
 from tkinter import font as tkfont
 import urllib.parse
 import urllib.request
@@ -263,7 +268,8 @@ def default_instance(name, mc="", loader="fabric"):
         "mc_version": mc,
         "loader": loader,
         "loader_version": "",   # blank = latest stable
-        "mods_dir": os.path.join(BASE, "instances", name, ".minecraft", "mods"),
+        "game_dir": os.path.join(BASE, "instances", name, ".minecraft"),  # worlds, settings, mods all live here
+        "mods_dir": os.path.join(BASE, "instances", name, ".minecraft", "mods"),  # always <game_dir>/mods
         "java_path": "",        # blank = Mojang's runtime for this MC version
         "memory_mb": "4096",
         "jvm_args": "",
@@ -307,6 +313,7 @@ def load_config():
                 old = json.load(f)
             inst = default_instance("Default", old.get("mc_version", ""))
             inst["mods_dir"] = old.get("mods_dir", inst["mods_dir"])
+            inst["game_dir"] = game_dir_of(inst)
             inst["launch_cmd"] = old.get("launch_cmd", "")
             inst["mods"] = old.get("repos", {})
             cfg["instances"]["Default"] = inst
@@ -315,8 +322,12 @@ def load_config():
     if not cfg["instances"]:
         cfg["instances"]["Default"] = default_instance("Default")
     for n, i in cfg["instances"].items():  # fill fields added in newer versions
+        if not (i.get("game_dir") or "").strip():  # pre-game_dir configs: keep exactly the folder used so far
+            i["game_dir"] = _game_dir_from_mods(i["mods_dir"]) if i.get("mods_dir") else ""
         for k, v in default_instance(n).items():
-            i.setdefault(k, v)
+            if k != "game_dir" or not i.get("game_dir"):
+                i.setdefault(k, v)
+        sync_dirs(i)
     if cfg["active"] not in cfg["instances"]:
         cfg["active"] = next(iter(cfg["instances"]))
     return cfg
@@ -720,6 +731,313 @@ def _game_dir_from_mods(mods_dir):
     return os.path.dirname(d) if os.path.basename(d) == "mods" else d
 
 
+# ================================================================= game folder: worlds + settings per instance
+GAME_SUBDIRS = ("mods", "config", "saves", "resourcepacks", "shaderpacks", "screenshots", "logs", "crash-reports")
+# things "copy settings" can move between instances (only the ones that exist in the source are offered)
+SETTINGS_ITEMS = ("options.txt", "optionsof.txt", "optionsshaders.txt", "servers.dat",
+                  "config", "resourcepacks", "shaderpacks")
+# player settings that pack overrides must never replace once they exist
+PROTECTED_USER_FILES = ("options.txt", "optionsof.txt", "optionsshaders.txt", "servers.dat")
+MARKER = ".ghml-instance.json"
+BACKUP_DIR = ".ghml-backups"
+
+
+def game_dir_of(inst):
+    """THE game folder of an instance (what Minecraft gets as --gameDir). Single source of truth."""
+    gd = (inst.get("game_dir") or "").strip()
+    return gd or _game_dir_from_mods(inst.get("mods_dir") or "") or os.path.join(BASE, "instances", "Default", ".minecraft")
+
+
+def sync_dirs(inst):
+    """Keep mods_dir == <game_dir>/mods (Minecraft only ever loads mods from there)."""
+    inst["game_dir"] = game_dir_of(inst)
+    inst["mods_dir"] = os.path.join(inst["game_dir"], "mods")
+    return inst["game_dir"]
+
+
+def _norm(p):
+    return os.path.normcase(os.path.abspath(p))
+
+
+def shared_with(cfg, name):
+    """Other instances whose game folder is the same as, inside, or around this one's."""
+    me = _norm(game_dir_of(cfg["instances"][name]))
+    out = []
+    for n, i in cfg["instances"].items():
+        if n == name:
+            continue
+        o = _norm(game_dir_of(i))
+        if o == me or o.startswith(me + os.sep) or me.startswith(o + os.sep):
+            out.append(n)
+    return out
+
+
+def read_marker(gd):
+    try:
+        with open(os.path.join(gd, MARKER), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def write_marker(inst, name, played=False):
+    """Small file in the game folder saying which instance owns it and the MC version last played."""
+    gd = game_dir_of(inst)
+    m = read_marker(gd)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    m.setdefault("created", now)
+    m.update(name=name, mc_version=inst.get("mc_version", ""), loader=inst.get("loader", ""))
+    if played:
+        m["last_mc"], m["last_played"] = inst.get("mc_version", ""), now
+    try:
+        with open(os.path.join(gd, MARKER), "w", encoding="utf-8") as f:
+            json.dump(m, f, indent=2)
+    except OSError:
+        pass
+
+
+def ensure_game_dir(inst, name=None):
+    """Create the instance's game folder with the standard layout. Returns the folder."""
+    gd = sync_dirs(inst)
+    for d in GAME_SUBDIRS:
+        os.makedirs(os.path.join(gd, d), exist_ok=True)
+    if name:
+        write_marker(inst, name)
+    return gd
+
+
+def _ver_tuple(s):
+    return tuple(int(x) for x in re.findall(r"\d+", (s or "").split("-")[0])[:4])
+
+
+def downgrade_warning(inst):
+    """MC version the worlds were last played on, if the instance is now set to an OLDER one."""
+    gd = game_dir_of(inst)
+    last, cur = read_marker(gd).get("last_mc", ""), inst.get("mc_version", "")
+    if last and cur and _ver_tuple(last) and _ver_tuple(cur) and _ver_tuple(cur) < _ver_tuple(last) and list_worlds(gd):
+        return last
+    return ""
+
+
+def _nbt_parse(data):
+    """Minimal NBT reader (enough for level.dat)."""
+    pos = 0
+
+    def u(fmt, n):
+        nonlocal pos
+        v = struct.unpack_from(fmt, data, pos)[0]
+        pos += n
+        return v
+
+    def string():
+        nonlocal pos
+        n = u(">H", 2)
+        s = data[pos:pos + n].decode("utf-8", "replace")
+        pos += n
+        return s
+
+    def payload(t):
+        nonlocal pos
+        if t == 1:
+            return u(">b", 1)
+        if t == 2:
+            return u(">h", 2)
+        if t == 3:
+            return u(">i", 4)
+        if t == 4:
+            return u(">q", 8)
+        if t == 5:
+            return u(">f", 4)
+        if t == 6:
+            return u(">d", 8)
+        if t == 7:
+            pos += u(">i", 4)
+            return None
+        if t == 8:
+            return string()
+        if t == 9:
+            et = u(">b", 1)
+            return [payload(et) for _ in range(u(">i", 4))]
+        if t == 10:
+            out = {}
+            while True:
+                tt = u(">b", 1)
+                if tt == 0:
+                    return out
+                k = string()
+                out[k] = payload(tt)
+        if t == 11:
+            pos += 4 * u(">i", 4)
+            return None
+        if t == 12:
+            pos += 8 * u(">i", 4)
+            return None
+        raise ValueError("bad NBT tag")
+
+    t = u(">b", 1)
+    string()
+    return payload(t)
+
+
+def read_level(path):
+    with gzip.open(path, "rb") as f:
+        root = _nbt_parse(f.read())
+    d = root.get("Data", {}) if isinstance(root, dict) else {}
+    ver = d.get("Version")
+    return {"name": d.get("LevelName"), "last_played": (d.get("LastPlayed") or 0) / 1000.0,
+            "mc": ver.get("Name") if isinstance(ver, dict) else None}
+
+
+def list_worlds(game_dir):
+    saves = os.path.join(game_dir, "saves")
+    out = []
+    try:
+        names = sorted(os.listdir(saves))
+    except OSError:
+        return out
+    for folder in names:
+        p = os.path.join(saves, folder)
+        lv = os.path.join(p, "level.dat")
+        if not os.path.isfile(lv):
+            continue
+        info = {"folder": folder, "path": p, "name": folder, "last_played": os.path.getmtime(lv), "mc": ""}
+        try:
+            r = read_level(lv)
+            if r["name"]:
+                info["name"] = r["name"]
+            if r["last_played"]:
+                info["last_played"] = r["last_played"]
+            info["mc"] = r["mc"] or ""
+        except Exception:
+            pass
+        out.append(info)
+    out.sort(key=lambda w: -w["last_played"])
+    return out
+
+
+def dir_size(path):
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
+
+
+def fmt_size(n):
+    for u in ("B", "KB", "MB", "GB"):
+        if n < 1024 or u == "GB":
+            return f"{n:.0f} {u}" if u == "B" else f"{n:.1f} {u}"
+        n /= 1024
+
+
+def unique_name(parent, base):
+    name, n = base, 2
+    while os.path.exists(os.path.join(parent, name)):
+        name, n = f"{base} ({n})", n + 1
+    return name
+
+
+def backup_dir(gd):
+    return os.path.join(gd, BACKUP_DIR)
+
+
+def backup_world(gd, folder):
+    """Zip saves/<folder> into <game>/.ghml-backups/. The zip restores via 'Import world'."""
+    if os.path.basename(folder) != folder:
+        raise RuntimeError("bad world folder name")
+    src = os.path.join(gd, "saves", folder)
+    os.makedirs(backup_dir(gd), exist_ok=True)
+    dest = os.path.join(backup_dir(gd), f"{folder}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip")
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+        for root, _dirs, files in os.walk(src):
+            for f in files:
+                if f == "session.lock":
+                    continue
+                fp = os.path.join(root, f)
+                z.write(fp, os.path.join(folder, os.path.relpath(fp, src)))
+    return dest
+
+
+def delete_world(gd, folder):
+    if os.path.basename(folder) != folder or not folder:
+        raise RuntimeError("bad world folder name")
+    shutil.rmtree(os.path.join(gd, "saves", folder))
+
+
+def copy_world(src_gd, folder, dst_gd):
+    if os.path.basename(folder) != folder:
+        raise RuntimeError("bad world folder name")
+    dst_saves = os.path.join(dst_gd, "saves")
+    os.makedirs(dst_saves, exist_ok=True)
+    name = unique_name(dst_saves, folder)
+    shutil.copytree(os.path.join(src_gd, "saves", folder), os.path.join(dst_saves, name),
+                    ignore=shutil.ignore_patterns("session.lock"))
+    return name
+
+
+def import_world(gd, src):
+    """Import a world folder or .zip (including this launcher's own backups). Never overwrites."""
+    saves = os.path.join(gd, "saves")
+    os.makedirs(saves, exist_ok=True)
+    if os.path.isdir(src):
+        if not os.path.isfile(os.path.join(src, "level.dat")):
+            raise RuntimeError("That folder has no level.dat, so it isn't a world")
+        name = unique_name(saves, os.path.basename(src.rstrip("/\\")))
+        shutil.copytree(src, os.path.join(saves, name))
+        return name
+    with zipfile.ZipFile(src) as z:
+        names = [n for n in z.namelist() if not n.endswith("/")]
+        lv = sorted((n for n in names if n.endswith("level.dat") and n.count("/") <= 1), key=len)
+        if not lv:
+            raise RuntimeError("No level.dat in that zip, so it isn't a world")
+        prefix = lv[0][:-len("level.dat")]
+        base = prefix.rstrip("/") or os.path.splitext(os.path.basename(src))[0]
+        name = unique_name(saves, base)
+        root = os.path.join(saves, name)
+        for n in names:
+            if not n.startswith(prefix):
+                continue
+            dest = _safe_join(root, n[len(prefix):])
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with z.open(n) as s_, open(dest, "wb") as d_:
+                shutil.copyfileobj(s_, d_)
+        return name
+
+
+def settings_items(gd):
+    return [(n, os.path.join(gd, n)) for n in SETTINGS_ITEMS if os.path.exists(os.path.join(gd, n))]
+
+
+def copy_settings(src_gd, dst_gd, items):
+    """Copy chosen settings from one instance to another; whatever gets replaced is backed up first."""
+    bk = os.path.join(backup_dir(dst_gd), "settings-" + datetime.now().strftime("%Y%m%d-%H%M%S"))
+    done, backed = [], False
+    for n in items:
+        if n not in SETTINGS_ITEMS:
+            continue
+        s_, d_ = os.path.join(src_gd, n), os.path.join(dst_gd, n)
+        if not os.path.exists(s_):
+            continue
+        if os.path.exists(d_):
+            os.makedirs(bk, exist_ok=True)
+            backed = True
+            if os.path.isdir(d_):
+                shutil.copytree(d_, os.path.join(bk, n))
+                shutil.rmtree(d_)
+            else:
+                shutil.copy2(d_, os.path.join(bk, n))
+                os.remove(d_)
+        if os.path.isdir(s_):
+            shutil.copytree(s_, d_)
+        else:
+            shutil.copy2(s_, d_)
+        done.append(n)
+    return done, (bk if backed else "")
+
+
 def download_github_zipball(repo, ref, token, log):
     """Download repo zipball to a temp file. Returns path to the .zip."""
     url = f"{API}/repos/{repo}/zipball/{ref}"
@@ -815,7 +1133,7 @@ def install_github_pack(repo, inst, token, log, ref="main", clear_mods=True):
         except Exception as e:
             log(f"Couldn't read the pack's latest commit ({e}); update checks won't work for this install")
         zip_path = download_github_zipball(repo, sha or ref, token, log)
-        game_dir = _game_dir_from_mods(inst["mods_dir"])
+        game_dir = game_dir_of(inst)
         log(f"Installing into {game_dir}")
         install_pack_zip(zip_path, game_dir, log, clear_mods=clear_mods)
         # Track that this instance came from a pack (for UI / future updates)
@@ -866,16 +1184,24 @@ def _safe_join(base, rel):
 
 
 def _extract_overrides(z, prefixes, game_dir, log):
-    n = 0
+    """Extract a pack's overrides/. Existing worlds and player settings are never replaced."""
+    n = kept = 0
     for name in z.namelist():
         for pre in prefixes:
             if name.startswith(pre) and not name.endswith("/"):
-                dest = _safe_join(game_dir, name[len(pre):])
+                rel = name[len(pre):]
+                dest = _safe_join(game_dir, rel)
+                parts = rel.split("/")
+                if (len(parts) == 1 and parts[0] in PROTECTED_USER_FILES and os.path.exists(dest)) or \
+                        (len(parts) > 1 and parts[0] == "saves"
+                         and os.path.isdir(os.path.join(game_dir, "saves", parts[1]))):
+                    kept += 1
+                    continue
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 with z.open(name) as src, open(dest, "wb") as dst:
                     shutil.copyfileobj(src, dst)
                 n += 1
-    log(f"  overrides: {n} file(s)")
+    log(f"  overrides: {n} file(s)" + (f"; kept {kept} existing world/settings file(s) untouched" if kept else ""))
 
 
 def _download_tmp(url, name, sha1=None):
@@ -887,7 +1213,7 @@ def _download_tmp(url, name, sha1=None):
 
 def install_mrpack(path, inst, log, clear_mods=True):
     """Install a Modrinth .mrpack into the instance and set its MC version / loader."""
-    game_dir = _game_dir_from_mods(inst["mods_dir"])
+    game_dir = game_dir_of(inst)
     with zipfile.ZipFile(path) as z:
         idx = json.loads(z.read("modrinth.index.json"))
         deps = idx.get("dependencies", {})
@@ -946,7 +1272,7 @@ def install_modrinth_pack(slug, version, inst, log, clear_mods=True):
 
 def install_cf_zip(cfg, path, inst, log, clear_mods=True):
     """Install a CurseForge modpack zip (manifest.json + overrides/)."""
-    game_dir = _game_dir_from_mods(inst["mods_dir"])
+    game_dir = game_dir_of(inst)
     with zipfile.ZipFile(path) as z:
         man = json.loads(z.read("manifest.json"))
         mcinfo = man.get("minecraft") or {}
@@ -2487,10 +2813,10 @@ class GlassPanel(tk.Frame):
 
 # ================================================================= app
 LAUNCHERS = ("builtin", "official")
-EDIT_KEYS = ("mc_version", "loader", "loader_version", "mods_dir", "java_path", "memory_mb", "jvm_args",
+EDIT_KEYS = ("mc_version", "loader", "loader_version", "game_dir", "java_path", "memory_mb", "jvm_args",
              "launch_cmd", "window_width", "window_height", "game_args", "env_vars",
              "pre_launch_cmd", "launcher")
-RAW_KEYS = ("mods_dir", "launch_cmd", "game_args", "env_vars", "pre_launch_cmd")  # saved without strip()
+RAW_KEYS = ("game_dir", "launch_cmd", "game_args", "env_vars", "pre_launch_cmd")  # saved without strip()
 
 
 def parse_env_vars(text):
@@ -2835,6 +3161,7 @@ class App(tk.Tk):
         self.inst_box.bind("<<ComboboxSelected>>", lambda _: self._select_instance(self.inst_var.get()))
         self._gbtn(bar, "New profile", self.new_instance, kind="normal", height=32).pack(side="left", padx=(10, 4))
         self._gbtn(bar, "Open folder", self.open_folder, kind="normal", height=32).pack(side="left", padx=2)
+        self._gbtn(bar, "Worlds & settings", self.open_game_data, kind="normal", height=32).pack(side="left", padx=2)
         self._gbtn(bar, "Delete", self.delete_instance, kind="danger", height=32).pack(side="left", padx=2)
 
         # ---- main area: tabs on top, activity log underneath
@@ -2991,7 +3318,7 @@ class App(tk.Tk):
                 ("Env vars (KEY=VAL;KEY2=VAL2)", self.vars["env_vars"], None),
                 ("Pre-launch cmd (runs before game)", self.vars["pre_launch_cmd"], None))),
             ("Profile - paths and launcher", (
-                ("Mods dir", self.vars["mods_dir"], None),
+                ("Game folder (worlds, settings, mods)", self.vars["game_dir"], None),
                 ("Java path (blank = Mojang runtime)", self.vars["java_path"], None),
                 ("External launch cmd (blank = built-in)", self.vars["launch_cmd"], None),
                 ("Launcher (builtin / official Minecraft)", self.vars["launcher"], "launcher"),
@@ -3341,6 +3668,7 @@ class App(tk.Tk):
         i = self.inst
         for k, v in self.vars.items():
             i[k] = v.get().strip() if k not in RAW_KEYS else v.get()
+        sync_dirs(i)  # mods_dir always follows game_dir
         i["fullscreen"] = bool(self.fullscreen_var.get())
         self.cfg["runtime_dir"] = self.runtime_var.get().strip()
         self.cfg["official_launcher_path"] = self.official_var.get().strip()
@@ -3404,7 +3732,7 @@ class App(tk.Tk):
             messagebox.showerror("Bad loader", f"Pick one of {LOADERS}")
             return
         self.cfg["instances"][name] = default_instance(name, mc.strip(), loader)
-        os.makedirs(self.cfg["instances"][name]["mods_dir"], exist_ok=True)
+        ensure_game_dir(self.cfg["instances"][name], name)
         self._select_instance(name)
 
     def delete_instance(self):
@@ -3412,26 +3740,310 @@ class App(tk.Tk):
             messagebox.showinfo("Nope", "Keep at least one instance.")
             return
         name = self.cfg["active"]
-        if not messagebox.askyesno("Delete", f"Delete instance '{name}'?"):
+        gd = game_dir_of(self.cfg["instances"][name])
+        shared = shared_with(self.cfg, name)
+        n_worlds = len(list_worlds(gd))
+        if not messagebox.askyesno("Delete", f"Delete instance '{name}'?\n\nGame folder:\n{gd}\n"
+                                             f"({n_worlds} world(s) in it)"):
             return
-        inst = self.cfg["instances"].pop(name)
-        game_dir = os.path.dirname(inst["mods_dir"])
-        if game_dir.startswith(BASE) and os.path.isdir(game_dir) and \
-                messagebox.askyesno("Delete files", f"Also delete {game_dir}?"):
-            shutil.rmtree(game_dir, ignore_errors=True)
+        self.cfg["instances"].pop(name)
+        managed = _norm(gd).startswith(_norm(os.path.join(BASE, "instances")) + os.sep)
+        if shared:
+            self.log(f"Kept {gd}: it is also the game folder of {', '.join(shared)}.")
+        elif managed and os.path.isdir(gd):
+            if messagebox.askyesno("Delete game folder",
+                                   f"Also permanently delete\n{gd}\n\nThis removes {n_worlds} world(s), settings, "
+                                   "screenshots and mods. It cannot be undone.", default="no", icon="warning"):
+                shutil.rmtree(gd, ignore_errors=True)
+            else:
+                self.log(f"Kept {gd} on disk - your worlds and settings are still there.")
+        elif os.path.isdir(gd):
+            self.log(f"Left {gd} untouched (it is outside the launcher's instances folder).")
         self._select_instance(next(iter(self.cfg["instances"])))
 
-    def open_folder(self):
-        d = self._game_dir()
-        os.makedirs(d, exist_ok=True)
+    def _open_path(self, path):
+        os.makedirs(path, exist_ok=True)
         if OS_NAME == "windows":
-            os.startfile(d)
+            os.startfile(path)
         else:
-            subprocess.Popen(["open" if OS_NAME == "osx" else "xdg-open", d])
+            subprocess.Popen(["open" if OS_NAME == "osx" else "xdg-open", path])
+
+    def open_folder(self):
+        self._open_path(self._game_dir())
 
     def _game_dir(self):
-        d = self.inst["mods_dir"].rstrip("/\\")
-        return os.path.dirname(d) if os.path.basename(d) == "mods" else d
+        return game_dir_of(self.inst)
+
+    # ---- worlds & settings (everything that lives in the instance's game folder)
+    def _pick_instance(self, title, prompt, exclude=None):
+        names = [n for n in self.cfg["instances"] if n != exclude]
+        if not names:
+            messagebox.showinfo(title, "There is no other instance.", parent=self)
+            return None
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.configure(bg=PAL["bg"])
+        win.transient(self)
+        win.resizable(False, False)
+        ttk.Label(win, text=prompt).pack(padx=14, pady=(14, 6))
+        var = tk.StringVar(value=names[0])
+        ttk.Combobox(win, textvariable=var, values=names, state="readonly", width=34).pack(padx=14)
+        out = {"v": None}
+
+        def ok():
+            out["v"] = var.get()
+            win.destroy()
+        row = ttk.Frame(win)
+        row.pack(pady=12)
+        ttk.Button(row, text="OK", command=ok).pack(side="left", padx=4)
+        ttk.Button(row, text="Cancel", command=win.destroy).pack(side="left", padx=4)
+        try:
+            win.grab_set()
+        except tk.TclError:
+            pass
+        self.wait_window(win)
+        return out["v"]
+
+    def _choose_items(self, title, prompt, items, defaults=()):
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.configure(bg=PAL["bg"])
+        win.transient(self)
+        win.resizable(False, False)
+        ttk.Label(win, text=prompt, wraplength=420).pack(padx=14, pady=(14, 6), anchor="w")
+        vars_ = {}
+        for it in items:
+            vars_[it] = tk.BooleanVar(value=it in defaults)
+            ttk.Checkbutton(win, text=it, variable=vars_[it]).pack(anchor="w", padx=24)
+        out = {"v": None}
+
+        def ok():
+            out["v"] = [k for k, v in vars_.items() if v.get()]
+            win.destroy()
+        row = ttk.Frame(win)
+        row.pack(pady=12)
+        ttk.Button(row, text="Copy", command=ok).pack(side="left", padx=4)
+        ttk.Button(row, text="Cancel", command=win.destroy).pack(side="left", padx=4)
+        try:
+            win.grab_set()
+        except tk.TclError:
+            pass
+        self.wait_window(win)
+        return out["v"]
+
+    def open_game_data(self):
+        inst, name = self.inst, self.cfg["active"]
+        gd = ensure_game_dir(inst, name)
+        save_config(self.cfg)
+        win = tk.Toplevel(self)
+        win.title(f"Worlds & settings - {name}")
+        win.geometry("880x660")
+        win.configure(bg=PAL["bg"])
+        win.transient(self)
+        status = tk.StringVar(value="")
+
+        top = ttk.Frame(win)
+        top.pack(fill="x", padx=10, pady=(10, 2))
+        ttk.Label(top, text="Game folder:").pack(side="left")
+        ttk.Label(top, text=gd, style="Muted.TLabel").pack(side="left", padx=6)
+        ttk.Button(top, text="Open", command=lambda: self._open_path(gd)).pack(side="right")
+        ttk.Label(win, style="Muted.TLabel", wraplength=840,
+                  text="Worlds live in saves/, settings in options.txt, servers.dat and config/. This folder belongs "
+                       "to this instance alone, and pack installs/updates never overwrite your worlds or options."
+                  ).pack(anchor="w", padx=10)
+        shared = shared_with(self.cfg, name)
+        if shared:
+            lbl = tk.Label(win, bg=PAL["bg"], fg=PAL["amber"], wraplength=840, justify="left",
+                           text=f"WARNING: this game folder overlaps with: {', '.join(shared)}. Worlds and settings "
+                                "are shared with them. Give each instance its own folder in Settings -> Game folder.")
+            lbl.pack(anchor="w", padx=10, pady=4)
+            self._themed_tk.append(lbl)
+
+        # ---- worlds
+        wf = ttk.LabelFrame(win, text=" Worlds ", padding=(10, 6))
+        wf.pack(fill="both", expand=True, padx=10, pady=(8, 4))
+        wcols = ("world", "folder", "played", "mc", "size")
+        heads = {"world": "World", "folder": "Folder", "played": "Last played", "mc": "MC version", "size": "Size"}
+        wt = ttk.Treeview(wf, columns=wcols, show="headings", selectmode="extended", height=8)
+        for c, w in zip(wcols, (230, 190, 130, 90, 90)):
+            wt.heading(c, text=heads[c])
+            wt.column(c, width=w)
+        wsb = ttk.Scrollbar(wf, orient="vertical", command=wt.yview)
+        wt.configure(yscrollcommand=wsb.set)
+        wsb.pack(side="right", fill="y")
+        wt.pack(side="left", fill="both", expand=True)
+        wb = ttk.Frame(win)
+        wb.pack(fill="x", padx=10)
+
+        # ---- settings files
+        sf = ttk.LabelFrame(win, text=" Settings files (this instance) ", padding=(10, 6))
+        sf.pack(fill="x", padx=10, pady=(8, 4))
+        st = ttk.Treeview(sf, columns=("item", "size"), show="headings", selectmode="extended", height=5)
+        st.heading("item", text="Item")
+        st.heading("size", text="Size")
+        st.column("item", width=420)
+        st.column("size", width=100)
+        st.pack(fill="x")
+        sb = ttk.Frame(win)
+        sb.pack(fill="x", padx=10)
+        ttk.Label(win, textvariable=status, style="Status.TLabel").pack(anchor="w", padx=10, pady=(6, 8))
+
+        def alive():
+            try:
+                return bool(win.winfo_exists())
+            except tk.TclError:
+                return False
+
+        def locked():
+            if self.game_proc:
+                messagebox.showinfo("Minecraft is running", "Close the game first, then try again.", parent=win)
+                return True
+            return False
+
+        def safe_set(tree, iid, col, val):
+            try:
+                if alive() and tree.exists(iid):
+                    tree.set(iid, col, val)
+            except tk.TclError:
+                pass
+
+        def refresh():
+            if not alive():
+                return
+            ws = list_worlds(gd)
+            wt.delete(*wt.get_children())
+            for w in ws:
+                wt.insert("", "end", iid=w["folder"], values=(
+                    w["name"], w["folder"], datetime.fromtimestamp(w["last_played"]).strftime("%Y-%m-%d %H:%M"),
+                    w["mc"] or "?", "..."))
+            items = settings_items(gd)
+            st.delete(*st.get_children())
+            for n, p in items:
+                st.insert("", "end", iid=n, values=(n + ("/" if os.path.isdir(p) else ""), "..."))
+
+            def sizes():
+                for w in ws:
+                    sz = fmt_size(dir_size(w["path"]))
+                    self.after(0, lambda f=w["folder"], v=sz: safe_set(wt, f, "size", v))
+                for n, p in items:
+                    try:
+                        sz = fmt_size(dir_size(p) if os.path.isdir(p) else os.path.getsize(p))
+                    except OSError:
+                        sz = "?"
+                    self.after(0, lambda f=n, v=sz: safe_set(st, f, "size", v))
+            threading.Thread(target=sizes, daemon=True).start()
+
+        def run(label, fn, done=None):
+            status.set(label + "...")
+
+            def work():
+                try:
+                    res = fn()
+                except Exception as e:
+                    msg = str(e)
+                    self.after(0, lambda: (status.set(f"Failed: {msg}"), self.log(f"[worlds] ERROR: {msg}")))
+                    return
+
+                def fin():
+                    if alive():
+                        status.set(f"{label}: done")
+                    if done:
+                        done(res)
+                    refresh()
+                self.after(0, fin)
+            threading.Thread(target=work, daemon=True).start()
+
+        def do_backup():
+            sel = list(wt.selection())
+            if not sel or locked():
+                return
+            run(f"Backing up {len(sel)} world(s)", lambda: [backup_world(gd, f) for f in sel],
+                lambda r: self.log(f"[worlds] backed up {len(r)} world(s) to {backup_dir(gd)}"))
+
+        def do_delete():
+            sel = list(wt.selection())
+            if not sel or locked():
+                return
+            ans = messagebox.askyesnocancel(
+                "Delete world(s)",
+                f"Delete {len(sel)} world(s)?\n\n" + "\n".join(sel[:8]) +
+                "\n\nYes = back up first, then delete\nNo = delete WITHOUT a backup\nCancel = keep them",
+                icon="warning", parent=win)
+            if ans is None:
+                return
+
+            def job():
+                for f in sel:
+                    if ans:
+                        backup_world(gd, f)
+                    delete_world(gd, f)
+            run(f"Deleting {len(sel)} world(s)", job, lambda r: self.log(f"[worlds] deleted {len(sel)} world(s)"))
+
+        def do_copy():
+            sel = list(wt.selection())
+            if not sel or locked():
+                return
+            target = self._pick_instance("Copy world(s)", "Copy the selected world(s) into instance:", exclude=name)
+            if not target:
+                return
+            dst = ensure_game_dir(self.cfg["instances"][target], target)
+            save_config(self.cfg)
+            if _norm(dst) == _norm(gd):
+                messagebox.showinfo("Same folder", "That instance uses the same game folder.", parent=win)
+                return
+            run(f"Copying {len(sel)} world(s) to {target}", lambda: [copy_world(gd, f, dst) for f in sel],
+                lambda r: self.log(f"[worlds] copied to '{target}': {', '.join(r)}"))
+
+        def do_import_zip():
+            if locked():
+                return
+            p = filedialog.askopenfilename(parent=win, title="Choose a world .zip (or one of this launcher's backups)",
+                                           filetypes=[("World zip", "*.zip"), ("All files", "*.*")])
+            if p:
+                run("Importing world", lambda: import_world(gd, p),
+                    lambda r: self.log(f"[worlds] imported as saves/{r}"))
+
+        def do_import_dir():
+            if locked():
+                return
+            p = filedialog.askdirectory(parent=win, title="Choose a world folder (the one containing level.dat)")
+            if p:
+                run("Importing world", lambda: import_world(gd, p),
+                    lambda r: self.log(f"[worlds] imported as saves/{r}"))
+
+        def do_copy_settings():
+            if locked():
+                return
+            src_name = self._pick_instance("Copy settings", "Copy settings FROM instance:", exclude=name)
+            if not src_name:
+                return
+            src_gd = game_dir_of(self.cfg["instances"][src_name])
+            avail = [n for n, _p in settings_items(src_gd)]
+            if not avail:
+                messagebox.showinfo("Nothing to copy", f"'{src_name}' has no settings files yet. Start it once so "
+                                    "Minecraft writes options.txt, then try again.", parent=win)
+                return
+            chosen = self._choose_items(
+                "Copy settings", f"Copy from '{src_name}' into '{name}'. Anything replaced is backed up first.",
+                avail, defaults=[a for a in avail if a in PROTECTED_USER_FILES])
+            if not chosen:
+                return
+
+            def done(r):
+                done_items, bk = r
+                self.log(f"[worlds] copied {', '.join(done_items) or 'nothing'} from '{src_name}'"
+                         + (f" (replaced files saved in {bk})" if bk else ""))
+            run("Copying settings", lambda: copy_settings(src_gd, gd, chosen), done)
+
+        for text, cmd in (("Backup", do_backup), ("Copy to instance...", do_copy), ("Delete", do_delete),
+                          ("Import .zip...", do_import_zip), ("Import folder...", do_import_dir),
+                          ("Open saves", lambda: self._open_path(os.path.join(gd, "saves"))),
+                          ("Open backups", lambda: self._open_path(backup_dir(gd)))):
+            ttk.Button(wb, text=text, command=cmd).pack(side="left", padx=(0, 4), pady=2)
+        ttk.Button(sb, text="Copy settings from another instance...", command=do_copy_settings).pack(side="left", pady=2)
+        ttk.Button(sb, text="Refresh", command=refresh).pack(side="left", padx=6, pady=2)
+        ttk.Button(sb, text="Close", command=win.destroy).pack(side="right", pady=2)
+        refresh()
 
     # ---- packs
     def install_fathom_pack(self):
@@ -3443,7 +4055,7 @@ class App(tk.Tk):
         if name not in self.cfg["instances"]:
             self.cfg["instances"][name] = default_instance(
                 name, FATHOM_PACK["mc_version"], FATHOM_PACK["loader"])
-            os.makedirs(self.cfg["instances"][name]["mods_dir"], exist_ok=True)
+            ensure_game_dir(self.cfg["instances"][name], name)
             self.log(f"Created profile '{name}' ({FATHOM_PACK['loader']} {FATHOM_PACK['mc_version']})")
         self._select_instance(name)
         self._start_pack_install(FATHOM_PACK["repo"], FATHOM_PACK["ref"], clear_mods=True)
@@ -3490,7 +4102,7 @@ class App(tk.Tk):
             while pname in self.cfg["instances"]:
                 pname, n = f"{base}-{n}", n + 1
             self.cfg["instances"][pname] = default_instance(pname, "", "fabric")
-            os.makedirs(self.cfg["instances"][pname]["mods_dir"], exist_ok=True)
+            ensure_game_dir(self.cfg["instances"][pname], pname)
             self._select_instance(pname)
         self._start_link_pack_install(kind, ref, extra, clear_mods=True)
 
@@ -3519,7 +4131,7 @@ class App(tk.Tk):
                 messagebox.showerror("Bad loader", f"Pick one of {LOADERS}")
                 return
             self.cfg["instances"][pname] = default_instance(pname, mc.strip(), loader)
-            os.makedirs(self.cfg["instances"][pname]["mods_dir"], exist_ok=True)
+            ensure_game_dir(self.cfg["instances"][pname], pname)
             self._select_instance(pname)
         self._start_pack_install(repo, ref.strip(), clear_mods=clear)
 
@@ -4414,9 +5026,10 @@ class App(tk.Tk):
             fetch_file(lg["file"]["url"], p, lg["file"].get("sha1"))
             log_arg = lg["argument"].replace("${path}", p)
 
-        game_dir = os.path.dirname(inst["mods_dir"].rstrip("/\\")) if os.path.basename(inst["mods_dir"].rstrip("/\\")) == "mods" \
-            else inst["mods_dir"]
-        os.makedirs(os.path.join(game_dir, "mods"), exist_ok=True)
+        game_dir = ensure_game_dir(inst, name)
+        for other in shared_with(self.cfg, name):
+            log(f"warning: this instance shares its game folder with '{other}' - worlds and settings are NOT "
+                f"separate. Give each instance its own 'Game folder' in Settings.")
 
         if not run:  # install/prepare only; no login needed
             return None, game_dir
@@ -4431,6 +5044,12 @@ class App(tk.Tk):
         user_type = "msa"
         xuid = acc.get("xuid") or ""
         log(f"Launching as {user}")
+        old_mc = downgrade_warning(inst)
+        if old_mc:
+            log(f"warning: the worlds here were last played on Minecraft {old_mc}; {inst['mc_version']} is older "
+                f"and may refuse or damage them. Back them up first (Worlds & settings).")
+        write_marker(inst, name, played=True)
+        log(f"Game folder: {game_dir}")
 
         cp = CP_SEP.join([os.path.join(rt, "libraries", l["path"]) for l in libs] + [jar])
         v = {"auth_player_name": user, "version_name": jar_id, "game_directory": game_dir,
@@ -4626,8 +5245,7 @@ class App(tk.Tk):
             vid = ensure_loader(inst, rt, java, log)
             save_config(self.cfg)
             self.after(0, lambda: self._set_version_var(vid) if self.cfg["active"] == name else None)
-            game_dir = _game_dir_from_mods(inst["mods_dir"])
-            os.makedirs(os.path.join(game_dir, "mods"), exist_ok=True)
+            game_dir = ensure_game_dir(inst, name)
             self._write_official_profile(inst, name, game_dir)
             env = {**os.environ, **parse_env_vars(inst.get("env_vars"))}
             self._run_pre_launch(inst, name, game_dir, env)
