@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-GH Mod Launcher - crude CurseForge-style launcher: instances (mod profiles), GitHub mods/packs,
+SkyLauncher - crude CurseForge-style launcher: instances (mod profiles), GitHub mods/packs,
 and a built-in game runner.
 Python 3.9+ (3.11+ recommended for Forge/NeoForge dependency parsing).
 Glass UI (rounded panels, smoke fades, glowing buttons) uses Pillow.
@@ -151,7 +151,43 @@ def ensure_pillow(log=None):
 
 API = "https://api.github.com"
 HOME = os.path.expanduser("~")
-BASE = os.path.join(HOME, ".ghmodlauncher")
+_OLD_BASE = os.path.join(HOME, ".ghmodlauncher")
+_NEW_BASE = os.path.join(HOME, ".skylauncher")
+_MIGRATED = None  # (old, new) when the data folder was moved this run
+
+
+def _pick_base():
+    """Use ~/.skylauncher. An existing ~/.ghmodlauncher is MOVED there and every stored path in its
+    config.json is rewritten, so instances, worlds and settings carry over. If anything fails the
+    move is undone and the old folder keeps being used, so nothing can be lost."""
+    global _MIGRATED
+    if not (os.path.isdir(_OLD_BASE) and not os.path.exists(_NEW_BASE)):
+        return _NEW_BASE
+    try:
+        os.rename(_OLD_BASE, _NEW_BASE)
+    except OSError:
+        return _OLD_BASE
+    cfgp = os.path.join(_NEW_BASE, "config.json")
+    try:
+        if os.path.exists(cfgp):
+            with open(cfgp, encoding="utf-8") as f:
+                text = f.read()
+            fixed = text.replace(json.dumps(_OLD_BASE)[1:-1], json.dumps(_NEW_BASE)[1:-1])
+            json.loads(fixed)  # must still be valid
+            with open(cfgp + ".tmp", "w", encoding="utf-8") as f:
+                f.write(fixed)
+            os.replace(cfgp + ".tmp", cfgp)
+    except Exception:
+        try:
+            os.rename(_NEW_BASE, _OLD_BASE)
+        except OSError:
+            pass
+        return _OLD_BASE
+    _MIGRATED = (_OLD_BASE, _NEW_BASE)
+    return _NEW_BASE
+
+
+BASE = _pick_base()
 CONFIG_PATH = os.path.join(BASE, "config.json")
 OLD_CONFIG = os.path.join(HOME, ".ghmodlauncher.json")
 
@@ -161,7 +197,7 @@ SKIP_DEPS = {"minecraft", "java", "forge", "neoforge", "fabricloader", "fabric-l
              "quilt_loader", "quilt_base", "fml", "javafml", "lowcodefml", "mixinextras"}
 
 # Launcher self-update (GitHub releases). Set "update_repo" in config.json or edit below.
-LAUNCHER_VERSION = "1.2.3"
+LAUNCHER_VERSION = "1.2.5"
 DEFAULT_UPDATE_REPO = "Newguygame/skylauncher"
 
 # Built-in pack: Fathom Studios (NeoForge 1.21.1)
@@ -358,7 +394,7 @@ OPENER = urllib.request.build_opener(_Redirect)
 
 def http(url, token="", binary=False, accept=None):
     """GitHub API calls. The token is only ever sent to api.github.com."""
-    h = {"User-Agent": "ghmodlauncher", "Accept": accept or "application/vnd.github+json"}
+    h = {"User-Agent": "skylauncher", "Accept": accept or "application/vnd.github+json"}
     tok = token or os.environ.get("GITHUB_TOKEN", "")
     if tok and urllib.parse.urlparse(url).netloc == "api.github.com":
         h["Authorization"] = f"Bearer {tok}"
@@ -369,7 +405,7 @@ def http(url, token="", binary=False, accept=None):
 
 def fetch_bytes(url, timeout=60):
     """Everything that is not GitHub (Mojang, Fabric, Forge, ...). Never sends credentials."""
-    req = urllib.request.Request(url, headers={"User-Agent": "ghmodlauncher"})
+    req = urllib.request.Request(url, headers={"User-Agent": "skylauncher"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
 
@@ -420,7 +456,7 @@ def fetch_latest_launcher_release(repo, token=""):
     # Prefer a .py asset (exact name or any .py)
     assets = rel.get("assets") or []
     py_assets = [a for a in assets if a.get("name", "").endswith(".py")]
-    script_name = os.path.basename(os.path.abspath(sys.argv[0])) if sys.argv else "ghmodlauncher.py"
+    script_name = os.path.basename(os.path.abspath(sys.argv[0])) if sys.argv else "skylauncher.py"
     if script_name.lower().endswith(".pyw"):  # run as .pyw (no console), but the repo ships the .py name
         script_name = script_name[:-1]
     for a in py_assets:
@@ -435,7 +471,7 @@ def fetch_latest_launcher_release(repo, token=""):
         # Raw GitHub URLs do not provide a directory listing, so use the canonical
         # launcher filename first, followed by common alternatives. The download
         # is validated before it can replace the current script.
-        names = list(dict.fromkeys((script_name, "ghmodlauncher.py", "launcher.py")))
+        names = list(dict.fromkeys((script_name, "skylauncher.py", "ghmodlauncher.py", "launcher.py")))
         download_url = f"https://raw.githubusercontent.com/{repo}/{tag}/{names[0]}"
     return {
         "tag": tag,
@@ -471,7 +507,7 @@ def apply_launcher_update(new_bytes):
     except UnicodeDecodeError as exc:
         raise RuntimeError("Downloaded update is not valid UTF-8 Python source") from exc
     head = source[:2000]
-    if "GH Mod Launcher" not in head and "import tkinter" not in source[:10000]:
+    if "SkyLauncher" not in head and "GH Mod Launcher" not in head and "import tkinter" not in source[:10000]:
         raise RuntimeError("Downloaded file does not look like this launcher")
     try:
         compile(source, "<launcher-update>", "exec")
@@ -484,7 +520,7 @@ def apply_launcher_update(new_bytes):
     if current.lower().endswith((".py", ".pyw")):
         target = current
     else:
-        target = os.path.join(os.path.dirname(current) or ".", "ghmodlauncher.py")
+        target = os.path.join(os.path.dirname(current) or ".", "skylauncher.py")
     tmp = target + ".new"
     bak = target + ".bak"
     with open(tmp, "wb") as f:
@@ -507,7 +543,7 @@ def _json_post(url, body, headers=None, timeout=60):
     data = json.dumps(body).encode("utf-8") if not isinstance(body, (bytes, str)) else (
         body.encode("utf-8") if isinstance(body, str) else body)
     h = {"Content-Type": "application/json", "Accept": "application/json",
-         "User-Agent": "ghmodlauncher"}
+         "User-Agent": "skylauncher"}
     if headers:
         h.update(headers)
     req = urllib.request.Request(url, data=data, headers=h, method="POST")
@@ -520,7 +556,7 @@ def _form_post(url, fields, timeout=60):
     req = urllib.request.Request(url, data=data, headers={
         "Content-Type": "application/x-www-form-urlencoded",
         "Accept": "application/json",
-        "User-Agent": "ghmodlauncher",
+        "User-Agent": "skylauncher",
     }, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
@@ -530,7 +566,7 @@ def _json_get(url, bearer, timeout=30):
     req = urllib.request.Request(url, headers={
         "Authorization": f"Bearer {bearer}",
         "Accept": "application/json",
-        "User-Agent": "ghmodlauncher",
+        "User-Agent": "skylauncher",
     })
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
@@ -1043,12 +1079,12 @@ def download_github_zipball(repo, ref, token, log):
     url = f"{API}/repos/{repo}/zipball/{ref}"
     log(f"Downloading pack {repo}@{ref} (this may take a while)...")
     # Stream to disk so we don't hold a huge zip in memory
-    h = {"User-Agent": "ghmodlauncher", "Accept": "application/vnd.github+json"}
+    h = {"User-Agent": "skylauncher", "Accept": "application/vnd.github+json"}
     tok = token or os.environ.get("GITHUB_TOKEN", "")
     if tok:
         h["Authorization"] = f"Bearer {tok}"
     req = urllib.request.Request(url, headers=h)
-    tmp = tempfile.NamedTemporaryFile(prefix="ghml-pack-", suffix=".zip", delete=False)
+    tmp = tempfile.NamedTemporaryFile(prefix="skylauncher-pack-", suffix=".zip", delete=False)
     try:
         with OPENER.open(req, timeout=300) as r:
             total = 0
@@ -1205,7 +1241,7 @@ def _extract_overrides(z, prefixes, game_dir, log):
 
 
 def _download_tmp(url, name, sha1=None):
-    d = tempfile.mkdtemp(prefix="ghml-pack-")
+    d = tempfile.mkdtemp(prefix="skylauncher-pack-")
     dest = os.path.join(d, name)
     fetch_file(url, dest, sha1)
     return d, dest
@@ -1533,7 +1569,7 @@ def installed_vid(key, info):
 def mr_json(path, params=None, token=""):
     """Modrinth API. Optional PAT raises rate limits; never required for public data."""
     url = MR_API + path + (("?" + urllib.parse.urlencode(params)) if params else "")
-    h = {"User-Agent": "ghmodlauncher", "Accept": "application/json"}
+    h = {"User-Agent": "skylauncher", "Accept": "application/json"}
     tok = (token or os.environ.get("MODRINTH_TOKEN") or "").strip()
     if tok:
         h["Authorization"] = tok
@@ -1618,7 +1654,7 @@ def cf_json(cfg, path, params=None, body=None):
         raise RuntimeError("CurseForge needs an API key (free at console.curseforge.com). "
                            "Paste it into Settings -> CurseForge API key.")
     url = CF_API + path + (("?" + urllib.parse.urlencode(params)) if params else "")
-    h = {"x-api-key": key, "Accept": "application/json", "User-Agent": "ghmodlauncher"}
+    h = {"x-api-key": key, "Accept": "application/json", "User-Agent": "skylauncher"}
     data = None
     if body is not None:
         data = json.dumps(body).encode("utf-8")
@@ -1858,6 +1894,33 @@ def official_profiles_path():
     else:
         root = os.path.expanduser("~/.minecraft")
     return os.path.join(root, "launcher_profiles.json")
+
+
+def fix_official_profiles_after_migration(log=None):
+    """After ~/.ghmodlauncher moved to ~/.skylauncher, repoint our profiles in the official launcher."""
+    global _MIGRATED
+    if not _MIGRATED:
+        return
+    old, new = _MIGRATED
+    _MIGRATED = None
+    path = official_profiles_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        changed = 0
+        for key, p in (data.get("profiles") or {}).items():
+            gd = p.get("gameDir") or ""
+            if key.startswith("ghml-") and (gd == old or gd.startswith(old + os.sep)):
+                p["gameDir"] = new + gd[len(old):]
+                changed += 1
+        if changed:
+            shutil.copy2(path, path + ".ghml.bak")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            if log:
+                log(f"Moved data folder to {new}; updated {changed} official-launcher profile(s) to match.")
+    except (OSError, ValueError):
+        pass
 
 
 def find_official_launcher(cfg):
@@ -2833,7 +2896,7 @@ def parse_env_vars(text):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(f"GH Mod Launcher v{LAUNCHER_VERSION}")
+        self.title(f"SkyLauncher v{LAUNCHER_VERSION}")
         self.geometry("1060x800")
         self.minsize(780, 580)
         self.cfg = load_config()
@@ -2849,6 +2912,9 @@ class App(tk.Tk):
         self._install_wheel_router()
         self._build()
         self._select_instance(self.cfg["active"])
+        if _MIGRATED:
+            self.log(f"Data folder moved: {_MIGRATED[0]} -> {_MIGRATED[1]} (instances and worlds carried over).")
+            fix_official_profiles_after_migration(self.log)
         self.after(200, self._first_run_hint)
         self.after(800, self._check_self_update)
 
@@ -3104,9 +3170,9 @@ class App(tk.Tk):
                 c._glass_photo = photo
             else:
                 draw_smoke_gradient(c, w, h)
-            draw_outlined_text(c, 22, h // 2 - 2, "GH Mod Launcher",
+            draw_outlined_text(c, 22, h // 2 - 2, "SkyLauncher",
                                (ff, 17, "bold"), PAL["fg"], PAL["outline"], tag="title")
-            c.create_text(22 + 190, h // 2 + 1, text=f"v{LAUNCHER_VERSION}",
+            c.create_text(22 + 146, h // 2 + 1, text=f"v{LAUNCHER_VERSION}",
                           font=(ff, 9), fill=PAL["muted"], anchor="w", tags="title")
 
         self._header_canvas.bind("<Configure>", _paint_header)
@@ -5057,7 +5123,7 @@ class App(tk.Tk):
              "auth_uuid": auth_uuid, "auth_access_token": access_token, "auth_session": access_token,
              "clientid": "", "auth_xuid": xuid, "user_type": user_type, "user_properties": "{}",
              "version_type": ver.get("type", "release"), "natives_directory": ndir,
-             "launcher_name": "ghmodlauncher", "launcher_version": LAUNCHER_VERSION, "classpath": cp,
+             "launcher_name": "skylauncher", "launcher_version": LAUNCHER_VERSION, "classpath": cp,
              "classpath_separator": CP_SEP, "library_directory": os.path.join(rt, "libraries"),
              "primary_jar": jar, "primary_jar_name": os.path.basename(jar), "game_assets": game_assets}
 
@@ -5157,7 +5223,7 @@ class App(tk.Tk):
         try:
             subprocess.Popen(shlex.split(cmd, posix=(OS_NAME != "windows")),
                              env={**os.environ, **parse_env_vars(i.get("env_vars")),
-                                  "GHML_GAME_DIR": self._game_dir()},
+                                  "GHML_GAME_DIR": self._game_dir(), "SKYLAUNCHER_GAME_DIR": self._game_dir()},
                              creationflags=NO_WINDOW)
             self.log(f"Launched external: {cmd}")
         except Exception as e:
@@ -5193,7 +5259,7 @@ class App(tk.Tk):
             mem = int(inst["memory_mb"])
         except ValueError:
             mem = 4096
-        p.update({"name": f"GHML: {name}", "type": "custom", "icon": "Furnace", "lastUsed": now,
+        p.update({"name": f"SkyLauncher: {name}", "type": "custom", "icon": "Furnace", "lastUsed": now,
                   "gameDir": game_dir, "lastVersionId": inst["version_id"],
                   "javaArgs": f"-Xmx{mem}M " + (inst.get("jvm_args") or "").strip()})
         if inst.get("java_path"):
@@ -5208,7 +5274,7 @@ class App(tk.Tk):
         profs[key] = p
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
-        self.log(f"Profile 'GHML: {name}' written (backup: {path}.ghml.bak).")
+        self.log(f"Profile 'SkyLauncher: {name}' written (backup: {path}.ghml.bak).")
 
     def start_official(self):
         """PLAY via the official Minecraft launcher: install loader, write profile, start launcher."""
@@ -5254,7 +5320,7 @@ class App(tk.Tk):
                 raise RuntimeError("Official Minecraft launcher not found.")
             subprocess.Popen(cmd, env=env, **({"start_new_session": True} if OS_NAME != "windows"
                                               else {"creationflags": NO_WINDOW}))
-            log(f"Started the official launcher. Pick the profile 'GHML: {name}' and press Play.")
+            log(f"Started the official launcher. Pick the profile 'SkyLauncher: {name}' and press Play.")
         except Exception as e:
             self.log(f"ERROR: {e}")
         finally:
@@ -5281,16 +5347,16 @@ def _no_console():
     """Windows: don't keep a console window attached to the launcher.
     If we were started with python.exe (what opens a console), restart under pythonw.exe and exit,
     so the window closes (or, if you ran us from your own terminal, the prompt comes back).
-    With no console at all, send print()/tracebacks to ~/.ghmodlauncher/launcher.log.
-    Set GHML_NO_RELAUNCH=1 to keep the console, e.g. for debugging."""
-    if OS_NAME == "windows" and not os.environ.get("GHML_NO_RELAUNCH"):
+    With no console at all, send print()/tracebacks to ~/.skylauncher/launcher.log.
+    Set SKYLAUNCHER_NO_RELAUNCH=1 (or the older GHML_NO_RELAUNCH=1) to keep the console, e.g. for debugging."""
+    if OS_NAME == "windows" and not (os.environ.get("SKYLAUNCHER_NO_RELAUNCH") or os.environ.get("GHML_NO_RELAUNCH")):
         exe = sys.executable or ""
         if os.path.basename(exe).lower() in ("python.exe", "python3.exe"):
             cands = [os.path.join(os.path.dirname(exe), "pythonw.exe"), shutil.which("pythonw")]
             for pyw in dict.fromkeys(c for c in cands if c):
                 try:
                     subprocess.Popen([pyw, os.path.abspath(sys.argv[0])] + sys.argv[1:],
-                                     env={**os.environ, "GHML_NO_RELAUNCH": "1"},
+                                     env={**os.environ, "SKYLAUNCHER_NO_RELAUNCH": "1", "GHML_NO_RELAUNCH": "1"},
                                      creationflags=0x00000008 | 0x00000200)  # DETACHED | NEW_PROCESS_GROUP
                 except OSError:
                     continue
