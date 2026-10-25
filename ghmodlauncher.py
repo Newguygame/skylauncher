@@ -4,10 +4,14 @@ GH Mod Launcher - crude CurseForge-style launcher: instances (mod profiles), Git
 and a built-in game runner.
 Stdlib only (Python 3.9+, 3.11+ recommended for Forge/NeoForge dependency parsing).
 
-Mods:     pulls jars from GitHub releases, matches loader + MC version, resolves dependencies,
-          verifies sha256 (GitHub digest / sidecar / checksums file, else trust-on-first-use).
+Mods:     GitHub releases, Modrinth and CurseForge (paste a link). Matches loader + MC version,
+          installs required dependencies automatically, verifies hashes (GitHub digest / sidecar /
+          checksums file, Modrinth + CurseForge sha1/sha512, else trust-on-first-use).
+          Version picker per mod, "Check updates" against each mod's own source, mod list with jar names.
 Packs:    installs full modpacks from GitHub repos that contain mods/ (+ config/, etc.)
-          via zipball download. Built-in one-click install for Fathom Studios pack.
+          via zipball download, or from Modrinth (.mrpack) / CurseForge modpack links.
+          GitHub packs are checked for newer commits on startup and you are asked to update.
+          Built-in one-click install for Fathom Studios pack.
 Runtime:  installs vanilla + Fabric / Quilt / Forge / NeoForge, fetches Mojang's Java runtime,
           downloads libraries + assets, builds the command line and starts the game.
 Auth:     Microsoft account (device-code flow) required to play; no offline mode.
@@ -32,6 +36,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
+from tkinter import font as tkfont
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -53,7 +58,7 @@ SKIP_DEPS = {"minecraft", "java", "forge", "neoforge", "fabricloader", "fabric-l
              "quilt_loader", "quilt_base", "fml", "javafml", "lowcodefml", "mixinextras"}
 
 # Launcher self-update (GitHub releases). Set "update_repo" in config.json or edit below.
-LAUNCHER_VERSION = "1.1.5"
+LAUNCHER_VERSION = "1.2.0"
 DEFAULT_UPDATE_REPO = "Newguygame/skylauncher"
 
 # Built-in pack: Fathom Studios (NeoForge 1.21.1)
@@ -136,6 +141,13 @@ def default_instance(name, mc="", loader="fabric"):
         "env_vars": "",         # KEY=VALUE;KEY2=VALUE2 passed to the game / pre-launch command
         "pre_launch_cmd": "",   # runs in the game dir before launch; non-zero exit aborts
         "launcher": "builtin",  # "builtin" (this app) or "official" (Mojang's Minecraft launcher)
+        # pack tracking (pack_source: github | modrinth | curseforge; update checks are GitHub-only)
+        "pack_source": "",
+        "pack_sha": "",         # GitHub commit that is installed
+        "pack_url": "",         # Modrinth / CurseForge pack link
+        "pack_name": "",
+        "pack_version": "",
+        "pack_skip_sha": "",    # latest commit the user already declined
     }
 
 
@@ -144,7 +156,8 @@ def load_config():
            "runtime_dir": os.path.join(BASE, "runtime"),
            "msa_client_id": "", "account": None,
            "update_repo": DEFAULT_UPDATE_REPO, "skip_update_version": "",
-           "official_launcher_path": ""}
+           "official_launcher_path": "", "curseforge_api_key": "",
+           "theme_bg": DEFAULT_BG}
     try:
         with open(CONFIG_PATH) as f:
             cfg.update(json.load(f))
@@ -599,21 +612,27 @@ def download_github_zipball(repo, ref, token, log):
         raise
 
 
+def clear_mods_dir(game_dir, log):
+    mods_dir = os.path.join(game_dir, "mods")
+    if not os.path.isdir(mods_dir):
+        return
+    log("Clearing existing mods folder...")
+    for f in os.listdir(mods_dir):
+        p = os.path.join(mods_dir, f)
+        try:
+            if os.path.isfile(p) or os.path.islink(p):
+                os.remove(p)
+            elif os.path.isdir(p):
+                shutil.rmtree(p)
+        except OSError as e:
+            log(f"  warning: could not remove {f}: {e}")
+
+
 def install_pack_zip(zip_path, game_dir, log, clear_mods=True):
     """Extract pack folders from a GitHub zipball into game_dir."""
     os.makedirs(game_dir, exist_ok=True)
-    mods_dir = os.path.join(game_dir, "mods")
-    if clear_mods and os.path.isdir(mods_dir):
-        log("Clearing existing mods folder...")
-        for f in os.listdir(mods_dir):
-            p = os.path.join(mods_dir, f)
-            try:
-                if os.path.isfile(p) or os.path.islink(p):
-                    os.remove(p)
-                elif os.path.isdir(p):
-                    shutil.rmtree(p)
-            except OSError as e:
-                log(f"  warning: could not remove {f}: {e}")
+    if clear_mods:
+        clear_mods_dir(game_dir, log)
 
     with zipfile.ZipFile(zip_path) as z:
         # GitHub zipball has a single top-level folder: owner-repo-sha/
@@ -648,13 +667,18 @@ def install_github_pack(repo, inst, token, log, ref="main", clear_mods=True):
     """Download a GitHub pack repo and install it into the instance."""
     zip_path = None
     try:
-        zip_path = download_github_zipball(repo, ref, token, log)
+        sha = ""
+        try:  # pin the download to one commit so we know exactly what was installed
+            sha = http(f"{API}/repos/{repo}/commits/{urllib.parse.quote(ref, safe='/')}", token)["sha"]
+        except Exception as e:
+            log(f"Couldn't read the pack's latest commit ({e}); update checks won't work for this install")
+        zip_path = download_github_zipball(repo, sha or ref, token, log)
         game_dir = _game_dir_from_mods(inst["mods_dir"])
         log(f"Installing into {game_dir}")
         install_pack_zip(zip_path, game_dir, log, clear_mods=clear_mods)
         # Track that this instance came from a pack (for UI / future updates)
-        inst["pack_repo"] = repo
-        inst["pack_ref"] = ref
+        inst.update(pack_source="github", pack_repo=repo, pack_ref=ref, pack_sha=sha,
+                    pack_url="", pack_name=repo, pack_version=sha[:7], pack_skip_sha="")
         # Pack jars are not individually tracked as GitHub-release mods
         log("Pack install complete.")
     finally:
@@ -663,6 +687,208 @@ def install_github_pack(repo, inst, token, log, ref="main", clear_mods=True):
                 os.unlink(zip_path)
             except OSError:
                 pass
+
+
+# ---- packs from Modrinth / CurseForge links
+def parse_pack_link(text):
+    """-> (kind, ref, extra): ('github', 'owner/name', ''), ('modrinth', slug, version), ('curseforge', slug, file id)."""
+    t = (text or "").strip()
+    m = re.match(r"(?:https?://)?(?:www\.)?modrinth\.com/modpack/([^/?#\s]+)(?:/version/([^/?#\s]+))?", t)
+    if m:
+        return "modrinth", m.group(1), m.group(2) or ""
+    m = re.match(r"(?:https?://)?(?:www\.)?curseforge\.com/minecraft/modpacks/([^/?#\s]+)(?:/files/(\d+))?", t)
+    if m:
+        return "curseforge", m.group(1), m.group(2) or ""
+    repo = re.sub(r"^https?://github\.com/", "", t).strip("/")
+    repo = re.sub(r"\.git$", "", repo)
+    repo = "/".join(repo.split("/")[:2])
+    if re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+        return "github", repo, ""
+    return None, None, None
+
+
+def _safe_join(base, rel):
+    """Join a path from inside a pack archive onto base, refusing anything that escapes it."""
+    rel = rel.replace("\\", "/")
+    if rel.startswith("/") or re.match(r"^[A-Za-z]:", rel) or ".." in rel.split("/"):
+        raise RuntimeError(f"Unsafe path in pack: {rel}")
+    dest = os.path.normpath(os.path.join(base, *rel.split("/")))
+    b = os.path.abspath(base)
+    try:
+        ok = os.path.commonpath([b, os.path.abspath(dest)]) == b
+    except ValueError:
+        ok = False
+    if not ok:
+        raise RuntimeError(f"Unsafe path in pack: {rel}")
+    return dest
+
+
+def _extract_overrides(z, prefixes, game_dir, log):
+    n = 0
+    for name in z.namelist():
+        for pre in prefixes:
+            if name.startswith(pre) and not name.endswith("/"):
+                dest = _safe_join(game_dir, name[len(pre):])
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with z.open(name) as src, open(dest, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                n += 1
+    log(f"  overrides: {n} file(s)")
+
+
+def _download_tmp(url, name, sha1=None):
+    d = tempfile.mkdtemp(prefix="ghml-pack-")
+    dest = os.path.join(d, name)
+    fetch_file(url, dest, sha1)
+    return d, dest
+
+
+def install_mrpack(path, inst, log, clear_mods=True):
+    """Install a Modrinth .mrpack into the instance and set its MC version / loader."""
+    game_dir = _game_dir_from_mods(inst["mods_dir"])
+    with zipfile.ZipFile(path) as z:
+        idx = json.loads(z.read("modrinth.index.json"))
+        deps = idx.get("dependencies", {})
+        keymap = {"fabric-loader": "fabric", "quilt-loader": "quilt", "forge": "forge", "neoforge": "neoforge"}
+        found = [(keymap[k], v) for k, v in deps.items() if k in keymap]
+        mc = deps.get("minecraft")
+        if not mc or not found:
+            raise RuntimeError("This .mrpack has no Minecraft version / supported loader in its dependencies")
+        loader, lver = found[0]
+        os.makedirs(game_dir, exist_ok=True)
+        if clear_mods:
+            clear_mods_dir(game_dir, log)
+        items = []
+        for f in idx.get("files", []):
+            if (f.get("env") or {}).get("client") == "unsupported":
+                continue
+            dest = _safe_join(game_dir, f["path"])
+            url = next((u for u in f.get("downloads", []) if urllib.parse.urlparse(u).netloc in MR_PACK_HOSTS), None)
+            if not url:
+                raise RuntimeError(f"No download from an allowed host for {f['path']}")
+            items.append((url, dest, (f.get("hashes") or {}).get("sha1"), None))
+        log(f"Downloading {len(items)} pack file(s)...")
+        download_all(items, log, "pack files")
+        _extract_overrides(z, ("overrides/", "client-overrides/"), game_dir, log)
+    inst.update(mc_version=mc, loader=loader, loader_version=lver)
+    log(f"Pack needs {loader} {lver} on Minecraft {mc}")
+
+
+def install_modrinth_pack(slug, version, inst, log, clear_mods=True):
+    p = mr_json(f"/project/{urllib.parse.quote(slug)}")
+    if p.get("project_type") != "modpack":
+        raise RuntimeError(f"'{slug}' on Modrinth is a {p.get('project_type')}, not a modpack")
+    if version:
+        v = mr_json(f"/project/{p['id']}/version/{urllib.parse.quote(version)}")
+    else:
+        vs = mr_json(f"/project/{p['id']}/version")
+        if not vs:
+            raise RuntimeError("This modpack has no versions")
+        v = next((x for x in vs if x.get("version_type") == "release"), vs[0])
+    files = v.get("files") or []
+    f = next((x for x in files if x.get("primary")), None) or next(
+        (x for x in files if x["filename"].endswith(".mrpack")), None)
+    if not f:
+        raise RuntimeError("That version has no .mrpack file")
+    log(f"Downloading {p['title']} {v['version_number']}...")
+    tmpdir, dest = _download_tmp(f["url"], "pack.mrpack", (f.get("hashes") or {}).get("sha1"))
+    try:
+        install_mrpack(dest, inst, log, clear_mods)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    inst.update(pack_source="modrinth", pack_repo="", pack_ref="", pack_sha="", pack_skip_sha="",
+                pack_url=f"https://modrinth.com/modpack/{p.get('slug') or slug}",
+                pack_name=p["title"], pack_version=v["version_number"])
+    log("Pack install complete.")
+
+
+def install_cf_zip(cfg, path, inst, log, clear_mods=True):
+    """Install a CurseForge modpack zip (manifest.json + overrides/)."""
+    game_dir = _game_dir_from_mods(inst["mods_dir"])
+    with zipfile.ZipFile(path) as z:
+        man = json.loads(z.read("manifest.json"))
+        mcinfo = man.get("minecraft") or {}
+        mc = mcinfo.get("version")
+        mls = mcinfo.get("modLoaders") or []
+        ml = next((m for m in mls if m.get("primary")), mls[0] if mls else None)
+        if not mc or not ml:
+            raise RuntimeError("manifest.json has no Minecraft version / mod loader")
+        loader, _, lver = ml["id"].partition("-")
+        if loader not in LOADERS:
+            raise RuntimeError(f"Unsupported loader in pack: {ml['id']}")
+        os.makedirs(game_dir, exist_ok=True)
+        if clear_mods:
+            clear_mods_dir(game_dir, log)
+        entries = man.get("files", [])
+        fids = [e["fileID"] for e in entries]
+        pids = sorted({e["projectID"] for e in entries})
+        log(f"Resolving {len(fids)} file(s) on CurseForge...")
+        info = {}
+        for i in range(0, len(fids), 400):
+            for x in cf_json(cfg, "/mods/files", body={"fileIds": fids[i:i + 400]})["data"]:
+                info[x["id"]] = x
+        klass = {}
+        try:
+            for i in range(0, len(pids), 400):
+                for m in cf_json(cfg, "/mods", body={"modIds": pids[i:i + 400]})["data"]:
+                    klass[m["id"]] = m.get("classId")
+        except Exception as e:
+            log(f"  couldn't look up project types ({e}); sorting by file extension")
+        folders = {6: "mods", 12: "resourcepacks", 6552: "shaderpacks"}
+        items, missing = [], []
+        for e in entries:
+            x = info.get(e["fileID"])
+            if not x:
+                missing.append(f"project {e['projectID']} file {e['fileID']}")
+                continue
+            name = x["fileName"]
+            folder = folders.get(klass.get(e["projectID"])) or ("mods" if name.lower().endswith(".jar") else None)
+            if not folder:
+                log(f"  skipping {name} (unsupported type)")
+                continue
+            url = x.get("downloadUrl") or CF_EDGE.format(x["id"] // 1000, x["id"] % 1000, urllib.parse.quote(name))
+            sha1 = next((h["value"] for h in x.get("hashes", []) if h.get("algo") == 1), None)
+            items.append((url, _safe_join(game_dir, f"{folder}/{name}"), sha1, None))
+        log(f"Downloading {len(items)} file(s)...")
+        fails = download_all(items, log, "pack files", strict=False)
+        _extract_overrides(z, ((man.get("overrides") or "overrides").rstrip("/") + "/",), game_dir, log)
+    for m in missing[:10]:
+        log(f"  not found on CurseForge: {m}")
+    if fails:
+        log(f"WARNING: {len(fails)} file(s) couldn't be downloaded (the author may have blocked third-party "
+            "downloads). Get them from CurseForge and drop them in mods/. First failures:")
+        for f in fails[:10]:
+            log("  " + f)
+    inst.update(mc_version=mc, loader=loader, loader_version=lver)
+    log(f"Pack needs {loader} {lver} on Minecraft {mc}")
+
+
+def install_curseforge_pack(cfg, slug, file_id, inst, log, clear_mods=True):
+    found = cf_json(cfg, "/mods/search", {"gameId": CF_GAME_ID, "classId": CF_CLASS_PACKS, "slug": slug})["data"]
+    if not found:
+        raise RuntimeError(f"CurseForge: no modpack with slug '{slug}'")
+    mod = found[0]
+    if file_id:
+        f = cf_json(cfg, f"/mods/{mod['id']}/files/{file_id}")["data"]
+    else:
+        files = cf_json(cfg, f"/mods/{mod['id']}/files", {"pageSize": 50})["data"]
+        files.sort(key=lambda x: x.get("fileDate") or "", reverse=True)
+        f = next((x for x in files if x.get("releaseType") == 1), files[0] if files else None)
+        if not f:
+            raise RuntimeError("This modpack has no files")
+    name = f["fileName"]
+    url = f.get("downloadUrl") or CF_EDGE.format(f["id"] // 1000, f["id"] % 1000, urllib.parse.quote(name))
+    sha1 = next((h["value"] for h in f.get("hashes", []) if h.get("algo") == 1), None)
+    log(f"Downloading {mod['name']} ({f.get('displayName') or name})...")
+    tmpdir, dest = _download_tmp(url, "pack.zip", sha1)
+    try:
+        install_cf_zip(cfg, dest, inst, log, clear_mods)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    inst.update(pack_source="curseforge", pack_repo="", pack_ref="", pack_sha="", pack_skip_sha="",
+                pack_url=f"https://www.curseforge.com/minecraft/modpacks/{mod.get('slug') or slug}",
+                pack_name=mod["name"], pack_version=f.get("displayName") or name)
+    log("Pack install complete.")
 
 
 # ================================================================= jar metadata (mods)
@@ -767,8 +993,14 @@ def candidates(rel, inst):
     return out
 
 
-def find_release(repo, inst, token):
+def find_release(repo, inst, token, tag=None):
     rels = [r for r in http(f"{API}/repos/{repo}/releases?per_page=100", token) if not r.get("draft")]
+    if tag:  # a specific release picked from the version list
+        for r in rels:
+            if r["tag_name"] == tag:
+                c = candidates(r, inst)
+                return (r, c) if c else (None, [])
+        return None, []
     stable = [r for r in rels if not r.get("prerelease")]
     for pool in (stable, rels):  # prefer stable, fall back to prereleases
         for rel in pool:
@@ -804,6 +1036,175 @@ def expected_hash(rel, asset, token):
     return None, ""
 
 
+# ================================================================= mod sources (GitHub / Modrinth / CurseForge)
+MR_API = "https://api.modrinth.com/v2"
+CF_API = "https://api.curseforge.com/v1"
+CF_GAME_ID = 432
+CF_CLASS_MODS, CF_CLASS_PACKS = 6, 4471
+CF_LOADER_TYPE = {"forge": 1, "fabric": 4, "quilt": 5, "neoforge": 6}
+CF_CHANNEL = {1: "release", 2: "beta", 3: "alpha"}
+CF_EDGE = "https://edge.forgecdn.net/files/{}/{}/{}"   # fallback when the API hides downloadUrl
+MR_PACK_HOSTS = ("cdn.modrinth.com", "github.com", "raw.githubusercontent.com", "gitlab.com")
+
+
+def mod_source(key):
+    if key.startswith("modrinth:"):
+        return "modrinth"
+    if key.startswith("curseforge:"):
+        return "curseforge"
+    return "github"
+
+
+def installed_vid(key, info):
+    """The id the source uses for the installed version (tag for GitHub, version/file id otherwise)."""
+    return info.get("tag") if mod_source(key) == "github" else info.get("version_id")
+
+
+def mr_json(path, params=None):
+    url = MR_API + path + (("?" + urllib.parse.urlencode(params)) if params else "")
+    return json.loads(fetch_bytes(url))
+
+
+def cf_key(cfg):
+    return (cfg.get("curseforge_api_key") or os.environ.get("CURSEFORGE_API_KEY") or "").strip()
+
+
+def cf_json(cfg, path, params=None, body=None):
+    """CurseForge API call. The key is only ever sent to api.curseforge.com."""
+    key = cf_key(cfg)
+    if not key:
+        raise RuntimeError("CurseForge needs an API key (free at console.curseforge.com). "
+                           "Paste it into Settings -> CurseForge API key.")
+    url = CF_API + path + (("?" + urllib.parse.urlencode(params)) if params else "")
+    h = {"x-api-key": key, "Accept": "application/json", "User-Agent": "ghmodlauncher"}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        h["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=h, method="POST" if body is not None else "GET")
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def parse_mod_link(text):
+    """-> (source, ref) for a GitHub repo, Modrinth mod link or CurseForge mod link; (None, None) if unknown."""
+    t = (text or "").strip()
+    m = re.match(r"(?:https?://)?(?:www\.)?modrinth\.com/(?:mod|plugin|datapack)/([^/?#\s]+)", t)
+    if m:
+        return "modrinth", m.group(1)
+    m = re.match(r"(?:https?://)?(?:www\.)?curseforge\.com/minecraft/mc-mods/([^/?#\s]+)", t)
+    if m:
+        return "curseforge", m.group(1)
+    m = re.match(r"(modrinth|curseforge):(\S+)$", t, re.I)
+    if m:
+        return m.group(1).lower(), m.group(2)
+    repo = re.sub(r"^https?://github\.com/", "", t).strip("/")
+    repo = re.sub(r"\.git$", "", repo)
+    repo = "/".join(repo.split("/")[:2])
+    if re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+        return "github", repo
+    return None, None
+
+
+def resolve_mod(source, ref, cfg):
+    """-> (key, display name). Modrinth/CurseForge keys use the stable project id."""
+    if source == "github":
+        return ref, ref
+    if source == "modrinth":
+        p = mr_json(f"/project/{urllib.parse.quote(ref)}")
+        return f"modrinth:{p['id']}", p.get("title") or ref
+    if ref.isdigit():
+        mod = cf_json(cfg, f"/mods/{ref}")["data"]
+    else:
+        found = cf_json(cfg, "/mods/search", {"gameId": CF_GAME_ID, "classId": CF_CLASS_MODS, "slug": ref})["data"]
+        if not found:
+            raise RuntimeError(f"CurseForge: no mod with slug '{ref}'")
+        mod = found[0]
+    return f"curseforge:{mod['id']}", mod["name"]
+
+
+def mr_norm(v):
+    """Modrinth version object -> common version record (None if it has no jar)."""
+    files = [{"name": f["filename"], "url": f["url"], "size": f.get("size"),
+              "sha1": (f.get("hashes") or {}).get("sha1"), "sha512": (f.get("hashes") or {}).get("sha512"),
+              "primary": bool(f.get("primary"))}
+             for f in v.get("files", []) if f.get("filename", "").lower().endswith(".jar")]
+    if not files:
+        return None
+    files.sort(key=lambda f: not f["primary"])
+    return {"id": v["id"], "label": v.get("version_number") or v.get("name") or v["id"],
+            "name": v.get("name") or "", "date": v.get("date_published") or "",
+            "channel": v.get("version_type") or "release", "mc": v.get("game_versions") or [],
+            "files": files,
+            "deps": [{"project": d.get("project_id"), "version": d.get("version_id")}
+                     for d in v.get("dependencies", []) if d.get("dependency_type") == "required"]}
+
+
+def mr_versions(project, inst):
+    loaders = [inst["loader"]] + (["fabric"] if inst["loader"] == "quilt" else [])
+    params = {"loaders": json.dumps(loaders)}
+    mc = inst["mc_version"].strip()
+    if mc:
+        params["game_versions"] = json.dumps([mc])
+    raw = mr_json(f"/project/{urllib.parse.quote(str(project))}/version", params)
+    return [n for n in map(mr_norm, raw) if n]
+
+
+def cf_file_norm(f):
+    name = f.get("fileName") or ""
+    if not name.lower().endswith(".jar"):
+        return None
+    fid = f["id"]
+    sha1 = next((h["value"] for h in f.get("hashes", []) if h.get("algo") == 1), None)
+    url = f.get("downloadUrl") or CF_EDGE.format(fid // 1000, fid % 1000, urllib.parse.quote(name))
+    return {"id": str(fid), "label": f.get("displayName") or name, "name": name,
+            "date": f.get("fileDate") or "", "channel": CF_CHANNEL.get(f.get("releaseType"), "release"),
+            "mc": [v for v in f.get("gameVersions", []) if v[:1].isdigit()],
+            "files": [{"name": name, "url": url, "size": f.get("fileLength"), "sha1": sha1,
+                       "sha512": None, "primary": True}],
+            "deps": [{"project": str(d["modId"])} for d in f.get("dependencies", [])
+                     if d.get("relationType") == 3]}  # 3 = required dependency
+
+
+def cf_versions(modid, inst, cfg):
+    params = {"pageSize": 50}
+    mc = inst["mc_version"].strip()
+    if mc:
+        params["gameVersion"] = mc
+    lt = CF_LOADER_TYPE.get(inst["loader"])
+    if lt:
+        params["modLoaderType"] = lt
+    data = cf_json(cfg, f"/mods/{modid}/files", params)["data"]
+    data.sort(key=lambda f: f.get("fileDate") or "", reverse=True)
+    return [n for n in map(cf_file_norm, data) if n]
+
+
+def gh_versions(repo, inst, token):
+    """GitHub releases that contain a jar fitting this instance."""
+    out = []
+    for r in http(f"{API}/repos/{repo}/releases?per_page=100", token):
+        if r.get("draft") or not candidates(r, inst):
+            continue
+        out.append({"id": r["tag_name"], "label": r["tag_name"], "name": r.get("name") or "",
+                    "date": r.get("published_at") or "",
+                    "channel": "beta" if r.get("prerelease") else "release", "mc": [], "files": [], "deps": [],
+                    "file_name": os.path.basename(candidates(r, inst)[0][1]["name"])})
+    return out
+
+
+def list_versions(key, inst, cfg):
+    """Versions of a tracked mod from its own source, newest first."""
+    src = mod_source(key)
+    if src == "github":
+        return gh_versions(key, inst, cfg.get("token", ""))
+    pid = key.split(":", 1)[1]
+    return mr_versions(pid, inst) if src == "modrinth" else cf_versions(pid, inst, cfg)
+
+
+def pick_latest(versions):
+    return next((v for v in versions if v["channel"] == "release"), versions[0] if versions else None)
+
+
 def installed_ids(inst):
     ids = set()
     tracked = {i.get("file"): i for i in inst["mods"].values()}
@@ -821,6 +1222,68 @@ def installed_ids(inst):
             for v in read_meta(os.path.join(inst["mods_dir"], f)).values():
                 ids |= v["ids"]
     return ids
+
+
+# ================================================================= pack update check (GitHub packs only)
+def pack_is_github(inst):
+    """Update checks only make sense for packs installed from a GitHub repo."""
+    return bool(inst.get("pack_repo")) and inst.get("pack_source", "github") in ("github", "")
+
+
+def check_github_pack_update(inst, token):
+    """-> None if not a GitHub pack / can't compare, else dict(repo, ref, installed, latest, message, newer)."""
+    if not pack_is_github(inst):
+        return None
+    repo, ref = inst["pack_repo"], inst.get("pack_ref") or "main"
+    c = http(f"{API}/repos/{repo}/commits/{urllib.parse.quote(ref, safe='/')}", token)
+    latest = c["sha"]
+    msg = ((c.get("commit") or {}).get("message") or "").strip().splitlines()
+    installed = inst.get("pack_sha") or ""
+    return {"repo": repo, "ref": ref, "installed": installed, "latest": latest,
+            "message": msg[0] if msg else "", "newer": bool(installed) and installed != latest}
+
+
+# ---- jar metadata cache so the mod list can show every jar without re-opening zips on each refresh
+_JAR_CACHE = {}
+
+
+def jar_info(path):
+    """-> (display id string, loaders) for a jar, cached by (path, mtime, size)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "", []
+    k = (path, st.st_mtime_ns, st.st_size)
+    hit = _JAR_CACHE.get(k)
+    if hit is None:
+        meta = read_meta(path)
+        ids = sorted({i for v in meta.values() for i in v["ids"]})
+        hit = (", ".join(ids[:2]) + ("..." if len(ids) > 2 else ""), sorted(meta))
+        _JAR_CACHE[k] = hit
+    return hit
+
+
+def list_mod_rows(inst):
+    """Rows for the mod list: tracked mods first, then every other jar in the mods folder."""
+    rows, tracked_files = [], set()
+    for key, i in inst["mods"].items():
+        tracked_files.add(i.get("file"))
+        rows.append({"iid": key, "key": key, "name": i.get("name") or key,
+                     "version": i.get("tag") or "-", "file": i.get("file") or "-",
+                     "source": mod_source(key),
+                     "role": ("dependency of " + ", ".join(
+                         (inst["mods"].get(x) or {}).get("name") or x for x in i.get("required_by", [])))
+                     if i.get("auto") else "added by you"})
+    try:
+        files = sorted(os.listdir(inst["mods_dir"]), key=str.lower)
+    except FileNotFoundError:
+        files = []
+    for f in files:
+        if f.lower().endswith(".jar") and f not in tracked_files:
+            ids, _ = jar_info(os.path.join(inst["mods_dir"], f))
+            rows.append({"iid": "jar:" + f, "key": None, "name": ids or f, "version": "-", "file": f,
+                         "source": "-", "role": "pack / manual"})
+    return rows
 
 
 def official_profiles_path():
@@ -893,10 +1356,10 @@ def fetch_file(url, dest, sha1=None, size=None):
     raise RuntimeError(f"download failed: {url} ({last})")
 
 
-def download_all(items, log, label):
-    """items: (url, dest, sha1, size). Parallel; raises if anything fails."""
+def download_all(items, log, label, strict=True):
+    """items: (url, dest, sha1, size). Parallel; raises if anything fails (strict) or returns the failures."""
     if not items:
-        return
+        return []
     fails, done = [], 0
     with ThreadPoolExecutor(8) as ex:
         futs = {ex.submit(fetch_file, *it): it for it in items}
@@ -910,7 +1373,10 @@ def download_all(items, log, label):
             if done % 500 == 0:
                 log(f"  {label}: {done}/{len(items)}")
     if fails:
-        raise RuntimeError(f"{len(fails)} {label} failed; first: {fails[0]}")
+        if strict:
+            raise RuntimeError(f"{len(fails)} {label} failed; first: {fails[0]}")
+        return fails
+    return []
 
 
 # ================================================================= runtime: version json handling
@@ -1257,6 +1723,166 @@ def ensure_loader(inst, rt, java, log):
     return vid
 
 
+# ================================================================= theme
+# Default matches the original dark look. Background is user-customizable.
+DEFAULT_BG = "#1b1d25"
+BG_PRESETS = (
+    ("Snow", "#ffffff"),
+    ("Mist", "#e8e8ec"),
+    ("Slate", "#6b6f7a"),
+    ("Charcoal", "#2a2d36"),
+    ("Midnight", "#0a0a0c"),
+)
+
+
+def _hex_to_rgb(h):
+    h = (h or "").strip().lstrip("#")
+    if len(h) != 6:
+        return 27, 29, 37
+    try:
+        return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except ValueError:
+        return 27, 29, 37
+
+
+def _rgb_to_hex(r, g, b):
+    return f"#{max(0, min(255, int(r))):02x}{max(0, min(255, int(g))):02x}{max(0, min(255, int(b))):02x}"
+
+
+def _mix(c1, c2, t):
+    """Linear blend of two #rrggbb colors; t=0 -> c1, t=1 -> c2."""
+    a, b = _hex_to_rgb(c1), _hex_to_rgb(c2)
+    return _rgb_to_hex(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t)
+
+
+def _luma(h):
+    r, g, b = _hex_to_rgb(h)
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+
+
+def build_palette(bg_hex=None):
+    """Derive a full UI palette from a background color (light or dark)."""
+    bg = (bg_hex or DEFAULT_BG).strip()
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", bg):
+        bg = DEFAULT_BG
+    light = _luma(bg) > 0.55
+    if light:
+        surface = _mix(bg, "#000000", 0.06)
+        surface2 = _mix(bg, "#000000", 0.12)
+        border = _mix(bg, "#000000", 0.22)
+        fg = "#1a1c24"
+        muted = "#5c6370"
+        accent, accent_hi = "#3d6fd9", "#2a5bc4"
+        green, green_hi = "#1f8a5a", "#187048"
+        red, red_hi = "#c0392b", "#a93226"
+        amber = "#b8860b"
+    else:
+        surface = _mix(bg, "#ffffff", 0.07)
+        surface2 = _mix(bg, "#ffffff", 0.14)
+        border = _mix(bg, "#ffffff", 0.22)
+        fg = "#e8eaf2"
+        muted = "#8d93a7"
+        accent, accent_hi = "#5b8cff", "#7aa3ff"
+        green, green_hi = "#2fa876", "#43c18b"
+        red, red_hi = "#c94c48", "#e0625e"
+        amber = "#f0b429"
+    return {
+        "bg": bg, "surface": surface, "surface2": surface2, "border": border,
+        "fg": fg, "muted": muted, "accent": accent, "accent_hi": accent_hi,
+        "green": green, "green_hi": green_hi, "red": red, "red_hi": red_hi, "amber": amber,
+        "on_accent": "#ffffff",
+    }
+
+
+PAL = build_palette(DEFAULT_BG)
+
+
+def apply_theme(root, bg_hex=None):
+    """ttk theme (built on 'clam') from a background color. Returns the UI font family."""
+    global PAL
+    if bg_hex is not None:
+        PAL = build_palette(bg_hex)
+    P = PAL
+    fams = set(tkfont.families(root))
+    ff = next((f for f in ("Segoe UI", "SF Pro Text", "Helvetica Neue", "Ubuntu", "DejaVu Sans") if f in fams),
+              "TkDefaultFont")
+    for nm in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
+        try:
+            tkfont.nametofont(nm).configure(family=ff, size=10)
+        except tk.TclError:
+            pass
+    root.configure(bg=P["bg"])
+    root.option_add("*TCombobox*Listbox.background", P["surface2"])
+    root.option_add("*TCombobox*Listbox.foreground", P["fg"])
+    root.option_add("*TCombobox*Listbox.selectBackground", P["accent"])
+    root.option_add("*TCombobox*Listbox.selectForeground", "#ffffff")
+    st = ttk.Style(root)
+    try:
+        st.theme_use("clam")
+    except tk.TclError:
+        pass
+    bold = (ff, 10, "bold")
+    st.configure(".", background=P["bg"], foreground=P["fg"], fieldbackground=P["surface2"],
+                 bordercolor=P["border"], lightcolor=P["border"], darkcolor=P["border"],
+                 troughcolor=P["bg"], focuscolor=P["bg"], insertcolor=P["fg"],
+                 selectbackground=P["accent"], selectforeground="#ffffff")
+    st.configure("TFrame", background=P["bg"])
+    st.configure("Card.TFrame", background=P["surface"])
+    st.configure("TLabel", background=P["bg"], foreground=P["fg"])
+    st.configure("Card.TLabel", background=P["surface"], foreground=P["fg"])
+    st.configure("Muted.TLabel", background=P["bg"], foreground=P["muted"])
+    st.configure("CardMuted.TLabel", background=P["surface"], foreground=P["muted"])
+    st.configure("Title.TLabel", background=P["surface"], foreground=P["fg"], font=(ff, 15, "bold"))
+    st.configure("Section.TLabel", background=P["surface"], foreground=P["accent_hi"], font=(ff, 8, "bold"))
+    st.configure("BgSection.TLabel", background=P["bg"], foreground=P["accent_hi"], font=(ff, 8, "bold"))
+    st.configure("Status.TLabel", background=P["surface"], foreground=P["muted"])
+    st.configure("TLabelframe", background=P["bg"], bordercolor=P["border"], relief="solid", borderwidth=1)
+    st.configure("TLabelframe.Label", background=P["bg"], foreground=P["accent_hi"], font=bold)
+
+    st.configure("TButton", background=P["surface2"], foreground=P["fg"], borderwidth=0, focusthickness=0,
+                 padding=(12, 6), relief="flat")
+    st.map("TButton", background=[("disabled", P["surface"]), ("pressed", P["border"]), ("active", P["border"])],
+           foreground=[("disabled", P["muted"])])
+    for name, base, hi in (("Accent", "accent", "accent_hi"), ("Play", "green", "green_hi"),
+                           ("Danger", "red", "red_hi")):
+        st.configure(f"{name}.TButton", background=P[base], foreground="#ffffff", font=bold)
+        st.map(f"{name}.TButton", background=[("disabled", P["surface2"]), ("pressed", P[base]), ("active", P[hi])],
+               foreground=[("disabled", P["muted"])])
+    st.configure("Play.TButton", font=(ff, 12, "bold"), padding=(26, 9))
+
+    st.configure("TEntry", fieldbackground=P["surface2"], foreground=P["fg"], padding=5, borderwidth=1)
+    st.map("TEntry", fieldbackground=[("readonly", P["surface"])], bordercolor=[("focus", P["accent"])],
+           lightcolor=[("focus", P["accent"])], darkcolor=[("focus", P["accent"])])
+    st.configure("TCombobox", fieldbackground=P["surface2"], background=P["surface2"], foreground=P["fg"],
+                 arrowcolor=P["muted"], padding=5)
+    st.map("TCombobox", fieldbackground=[("readonly", P["surface2"])], foreground=[("readonly", P["fg"])],
+           selectbackground=[("readonly", P["surface2"])], selectforeground=[("readonly", P["fg"])],
+           bordercolor=[("focus", P["accent"])])
+    st.configure("TCheckbutton", background=P["bg"], foreground=P["fg"])
+    st.map("TCheckbutton", background=[("active", P["bg"])])
+
+    st.configure("TNotebook", background=P["bg"], borderwidth=0, tabmargins=(0, 0, 0, 0))
+    st.configure("TNotebook.Tab", background=P["surface"], foreground=P["muted"], padding=(22, 9), borderwidth=0)
+    st.map("TNotebook.Tab", background=[("selected", P["surface2"]), ("active", P["surface2"])],
+           foreground=[("selected", P["fg"]), ("active", P["fg"])])
+
+    st.configure("Treeview", background=P["surface"], fieldbackground=P["surface"], foreground=P["fg"],
+                 rowheight=27, borderwidth=0, relief="flat")
+    st.map("Treeview", background=[("selected", P["accent"])], foreground=[("selected", "#ffffff")])
+    st.configure("Treeview.Heading", background=P["surface2"], foreground=P["fg"], relief="flat",
+                 borderwidth=0, padding=(8, 6), font=bold)
+    st.map("Treeview.Heading", background=[("active", P["border"])])
+    for o in ("Vertical", "Horizontal"):
+        st.configure(f"{o}.TScrollbar", background=P["surface2"], troughcolor=P["bg"], bordercolor=P["bg"],
+                     arrowcolor=P["muted"], relief="flat", gripcount=0)
+        st.map(f"{o}.TScrollbar", background=[("active", P["border"])])
+    st.configure("Horizontal.TProgressbar", troughcolor=P["surface2"], background=P["accent"],
+                 bordercolor=P["surface"], lightcolor=P["accent"], darkcolor=P["accent"], thickness=6)
+    st.configure("TPanedwindow", background=P["bg"])
+    st.configure("Sash", background=P["bg"], sashthickness=6)
+    return ff
+
+
 # ================================================================= app
 LAUNCHERS = ("builtin", "official")
 EDIT_KEYS = ("mc_version", "loader", "loader_version", "mods_dir", "java_path", "memory_mb", "jvm_args",
@@ -1280,12 +1906,17 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"GH Mod Launcher v{LAUNCHER_VERSION}")
-        self.geometry("920x720")
-        self.minsize(640, 480)
+        self.geometry("1060x800")
+        self.minsize(780, 580)
         self.cfg = load_config()
+        self.ff = apply_theme(self, self.cfg.get("theme_bg") or DEFAULT_BG)
         self.busy = False
         self.game_proc = None
         self._loading = False
+        self.latest = {}          # instance -> {mod key: latest-version text}
+        self._themed_tk = []      # plain tk widgets that need bg/fg refresh on theme change
+        self._names = {}          # mod key -> display name cache
+        self._pack_checked = set()  # instances whose pack was already checked this session
         self._build()
         self._select_instance(self.cfg["active"])
         self.after(200, self._first_run_hint)
@@ -1430,169 +2061,303 @@ class App(tk.Tk):
 
     # ---- UI
     def _build(self):
-        # Scrollable main area so the window fits smaller screens
-        outer = ttk.Frame(self)
-        outer.pack(fill="both", expand=True)
-        canvas = tk.Canvas(outer, highlightthickness=0, borderwidth=0)
-        sb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-        body = ttk.Frame(canvas)
-        body_id = canvas.create_window((0, 0), window=body, anchor="nw")
-
-        def _sync_scroll(_event=None):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        def _sync_width(event):
-            canvas.itemconfigure(body_id, width=event.width)
-
-        body.bind("<Configure>", _sync_scroll)
-        canvas.bind("<Configure>", _sync_width)
-
-        def _wheel(event):
-            # Windows / macOS
-            if getattr(event, "delta", 0):
-                canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            # X11
-            elif getattr(event, "num", None) == 4:
-                canvas.yview_scroll(-3, "units")
-            elif getattr(event, "num", None) == 5:
-                canvas.yview_scroll(3, "units")
-
-        def _bind_wheel(_event=None):
-            canvas.bind_all("<MouseWheel>", _wheel)
-            canvas.bind_all("<Button-4>", _wheel)
-            canvas.bind_all("<Button-5>", _wheel)
-
-        def _unbind_wheel(_event=None):
-            canvas.unbind_all("<MouseWheel>")
-            canvas.unbind_all("<Button-4>")
-            canvas.unbind_all("<Button-5>")
-
-        canvas.bind("<Enter>", _bind_wheel)
-        canvas.bind("<Leave>", _unbind_wheel)
-        body.bind("<Enter>", _bind_wheel)
-        body.bind("<Leave>", _unbind_wheel)
-
-        # Self-update controls stay hidden until a newer GitHub release is found.
-        update_row = ttk.Frame(body)
-        update_row.pack(fill="x", padx=8, pady=(6, 0))
-        self.update_btn = ttk.Button(
-            update_row, text="Update launcher", command=self._do_self_update
-        )
-        self.update_lbl = ttk.Label(update_row, text="")
-
-        row = ttk.Frame(body); row.pack(fill="x", padx=8, pady=6)
-        ttk.Label(row, text="Profile / Instance:").pack(side="left")
-        self.inst_var = tk.StringVar()
-        self.inst_box = ttk.Combobox(row, textvariable=self.inst_var, state="readonly", width=24)
-        self.inst_box.pack(side="left", padx=6)
-        self.inst_box.bind("<<ComboboxSelected>>", lambda _: self._select_instance(self.inst_var.get()))
-        for text, cmd in (("New profile", self.new_instance), ("Delete", self.delete_instance),
-                          ("Open folder", self.open_folder)):
-            ttk.Button(row, text=text, command=cmd).pack(side="left", padx=2)
-
-        # Pack install row
-        pack = ttk.Frame(body); pack.pack(fill="x", padx=8, pady=2)
-        ttk.Label(pack, text="Packs:").pack(side="left")
-        ttk.Button(pack, text="Install Fathom Studios pack",
-                   command=self.install_fathom_pack).pack(side="left", padx=4)
-        ttk.Button(pack, text="Install pack from GitHub...",
-                   command=self.install_pack_dialog).pack(side="left", padx=2)
-        ttk.Button(pack, text="Reinstall / update pack",
-                   command=self.reinstall_current_pack).pack(side="left", padx=2)
-
-        add = ttk.Frame(body); add.pack(fill="x", padx=8, pady=2)
-        ttk.Label(add, text="Add mod (GitHub owner/name or URL):").pack(side="left")
-        self.repo_var = tk.StringVar()
-        e = ttk.Entry(add, textvariable=self.repo_var, width=40)
-        e.pack(side="left", padx=6)
-        e.bind("<Return>", lambda _: self.add_repo())
-        ttk.Button(add, text="Add + install mod", command=self.add_repo).pack(side="left")
-
-        cols = ("repo", "tag", "file", "sha256", "role")
-        self.tree = ttk.Treeview(body, columns=cols, show="headings", height=9)
-        for c, w in zip(cols, (200, 90, 280, 90, 160)):
-            self.tree.heading(c, text=c)
-            self.tree.column(c, width=w)
-        self.tree.pack(fill="both", expand=True, padx=8, pady=6)
-
-        b = ttk.Frame(body); b.pack(fill="x", padx=8)
-        for text, cmd in (("Update selected", lambda: self.update_mods(True)),
-                          ("Update all", lambda: self.update_mods(False)),
-                          ("Remove selected", self.remove_selected),
-                          ("Verify hashes", self.verify)):
-            ttk.Button(b, text=text, command=cmd).pack(side="left", padx=2)
-        ttk.Button(b, text="PLAY", command=self.play).pack(side="right")
-        ttk.Button(b, text="Stop", command=self.stop_game).pack(side="right", padx=4)
-        ttk.Button(b, text="Install / prepare", command=lambda: self.start_run(False)).pack(side="right", padx=4)
-        ttk.Button(b, text="Sync to official launcher", command=self.sync_profile).pack(side="right", padx=4)
-
-        # Account / auth bar
-        auth = ttk.Frame(body); auth.pack(fill="x", padx=8, pady=4)
-        ttk.Label(auth, text="Account:").pack(side="left")
+        P = PAL
+        ff = self.ff
+        # ---- header: title, launcher self-update, Microsoft account
+        head = ttk.Frame(self, style="Card.TFrame")
+        head.pack(fill="x")
+        hin = ttk.Frame(head, style="Card.TFrame")
+        hin.pack(fill="x", padx=16, pady=10)
+        ttk.Label(hin, text="GH Mod Launcher", style="Title.TLabel").pack(side="left")
+        ttk.Label(hin, text=f"v{LAUNCHER_VERSION}", style="CardMuted.TLabel").pack(side="left", padx=(8, 0), pady=(6, 0))
+        acct = ttk.Frame(hin, style="Card.TFrame")
+        acct.pack(side="right")
         self.auth_status = tk.StringVar(value="Not logged in")
-        ttk.Label(auth, textvariable=self.auth_status, width=28).pack(side="left", padx=6)
-        ttk.Button(auth, text="Log in with Microsoft", command=self.ms_login).pack(side="left", padx=2)
-        ttk.Button(auth, text="Log out", command=self.ms_logout).pack(side="left", padx=2)
+        ttk.Label(acct, textvariable=self.auth_status, style="Card.TLabel").pack(side="left", padx=(0, 10))
+        ttk.Button(acct, text="Log in with Microsoft", style="Accent.TButton",
+                   command=self.ms_login).pack(side="left", padx=2)
+        ttk.Button(acct, text="Log out", command=self.ms_logout).pack(side="left", padx=2)
+        # launcher self-update controls stay hidden until a newer GitHub release is found
+        update_row = ttk.Frame(hin, style="Card.TFrame")
+        update_row.pack(side="right", padx=16)
+        self.update_btn = ttk.Button(update_row, text="Update launcher", style="Accent.TButton",
+                                     command=self._do_self_update)
+        self.update_lbl = ttk.Label(update_row, text="", style="CardMuted.TLabel")
         self._update_auth_status()
 
-        s = ttk.LabelFrame(body, text="Settings"); s.pack(fill="x", padx=8, pady=6)
+        # ---- bottom action bar (packed first so it always stays visible)
+        act = ttk.Frame(self, style="Card.TFrame")
+        act.pack(side="bottom", fill="x")
+        ain = ttk.Frame(act, style="Card.TFrame")
+        ain.pack(fill="x", padx=16, pady=10)
+        ttk.Button(ain, text="PLAY", style="Play.TButton", command=self.play).pack(side="right")
+        ttk.Button(ain, text="Stop", command=self.stop_game).pack(side="right", padx=(0, 8))
+        ttk.Button(ain, text="Install / prepare", command=lambda: self.start_run(False)).pack(side="right", padx=(0, 8))
+        ttk.Button(ain, text="Sync to official launcher", command=self.sync_profile).pack(side="right", padx=(0, 8))
+        self.progress = ttk.Progressbar(ain, mode="indeterminate", length=120)
+        self.progress.pack(side="left")
+        self.status_var = tk.StringVar(value="Ready")
+        ttk.Label(ain, textvariable=self.status_var, style="Status.TLabel").pack(side="left", padx=10)
+
+        # ---- profile bar
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", padx=16, pady=(12, 8))
+        ttk.Label(bar, text="PROFILE", style="BgSection.TLabel").pack(side="left", padx=(0, 8))
+        self.inst_var = tk.StringVar()
+        self.inst_box = ttk.Combobox(bar, textvariable=self.inst_var, state="readonly", width=28)
+        self.inst_box.pack(side="left")
+        self.inst_box.bind("<<ComboboxSelected>>", lambda _: self._select_instance(self.inst_var.get()))
+        ttk.Button(bar, text="New profile", command=self.new_instance).pack(side="left", padx=(10, 2))
+        ttk.Button(bar, text="Open folder", command=self.open_folder).pack(side="left", padx=2)
+        ttk.Button(bar, text="Delete", style="Danger.TButton", command=self.delete_instance).pack(side="left", padx=2)
+
+        # ---- main area: tabs on top, activity log underneath
+        paned = ttk.PanedWindow(self, orient="vertical")
+        paned.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+        nb = ttk.Notebook(paned)
+        paned.add(nb, weight=4)
+        log_fr = ttk.Frame(paned)
+        paned.add(log_fr, weight=1)
+
+        # ================= Mods tab
+        mods = ttk.Frame(nb, padding=12)
+        nb.add(mods, text="Mods")
+
+        card = ttk.Frame(mods, style="Card.TFrame", padding=12)
+        card.pack(fill="x")
+        ttk.Label(card, text="MODPACK", style="Section.TLabel").pack(anchor="w")
+        self.pack_lbl = ttk.Label(card, text="", style="Card.TLabel", font=(ff, 11, "bold"))
+        self.pack_lbl.pack(anchor="w", pady=(2, 8))
+        prow = ttk.Frame(card, style="Card.TFrame")
+        prow.pack(fill="x")
+        ttk.Button(prow, text="Install Fathom Studios pack", command=self.install_fathom_pack).pack(side="left")
+        ttk.Button(prow, text="Install pack from link...", command=self.install_pack_dialog).pack(side="left", padx=6)
+        ttk.Button(prow, text="Check pack update", command=self.check_pack_update).pack(side="left")
+        ttk.Button(prow, text="Reinstall pack", command=self.reinstall_current_pack).pack(side="left", padx=6)
+
+        addc = ttk.Frame(mods, style="Card.TFrame", padding=12)
+        addc.pack(fill="x", pady=(10, 0))
+        ttk.Label(addc, text="ADD MOD", style="Section.TLabel").pack(anchor="w")
+        arow = ttk.Frame(addc, style="Card.TFrame")
+        arow.pack(fill="x", pady=(4, 0))
+        self.repo_var = tk.StringVar()
+        e = ttk.Entry(arow, textvariable=self.repo_var)
+        e.pack(side="left", fill="x", expand=True)
+        e.bind("<Return>", lambda _: self.add_repo())
+        ttk.Button(arow, text="Add + install", style="Accent.TButton", command=self.add_repo).pack(side="left", padx=(8, 0))
+        ttk.Label(addc, text="GitHub owner/name or URL  -  Modrinth or CurseForge mod link  -  modrinth:slug / curseforge:slug",
+                  style="CardMuted.TLabel").pack(anchor="w", pady=(4, 0))
+
+        lh = ttk.Frame(mods)
+        lh.pack(fill="x", pady=(12, 4))
+        ttk.Label(lh, text="INSTALLED MODS", style="BgSection.TLabel").pack(side="left")
+        self.count_lbl = ttk.Label(lh, text="", style="Muted.TLabel")
+        self.count_lbl.pack(side="left", padx=10)
+        self.filter_var = tk.StringVar()
+        ttk.Entry(lh, textvariable=self.filter_var, width=24).pack(side="right")
+        ttk.Label(lh, text="Filter", style="Muted.TLabel").pack(side="right", padx=6)
+        self.filter_var.trace_add("write", lambda *_: self._refresh_list())
+
+        tf = ttk.Frame(mods)
+        tf.pack(fill="both", expand=True)
+        cols = ("name", "version", "jar file", "latest", "source", "role")
+        self.tree = ttk.Treeview(tf, columns=cols, show="headings", height=8)
+        for c, w in zip(cols, (180, 110, 260, 110, 80, 170)):
+            self.tree.heading(c, text=c.capitalize())
+            self.tree.column(c, width=w, minwidth=60)
+        self.tree.tag_configure("update", foreground=P["amber"])
+        self.tree.tag_configure("dep", foreground=P["accent_hi"])
+        self.tree.tag_configure("pack", foreground=P["muted"])
+        tsb = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tsb.set)
+        tsb.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
+
+        b0 = ttk.Frame(mods)
+        b0.pack(fill="x", pady=(8, 0))
+        ttk.Button(b0, text="Check updates", style="Accent.TButton", command=self.check_updates).pack(side="left")
+        for text, cmd in (("Versions...", self.show_versions),
+                          ("Update selected", lambda: self.update_mods(True)),
+                          ("Update all", lambda: self.update_mods(False)),
+                          ("Verify hashes", self.verify),
+                          ("Export modlist", self.export_modlist)):
+            ttk.Button(b0, text=text, command=cmd).pack(side="left", padx=(6, 0))
+        ttk.Button(b0, text="Remove selected", style="Danger.TButton", command=self.remove_selected).pack(side="right")
+
+        # ================= Settings tab (scrolls on small windows)
+        set_tab = ttk.Frame(nb)
+        nb.add(set_tab, text="Settings")
+        sc = tk.Canvas(set_tab, bg=P["bg"], highlightthickness=0, borderwidth=0)
+        self._settings_canvas = sc
+        self._themed_tk.append(sc)
+        ssb = ttk.Scrollbar(set_tab, orient="vertical", command=sc.yview)
+        sc.configure(yscrollcommand=ssb.set)
+        ssb.pack(side="right", fill="y")
+        sc.pack(side="left", fill="both", expand=True)
+        sform = ttk.Frame(sc, padding=(14, 12))
+        sid = sc.create_window((0, 0), window=sform, anchor="nw")
+        sform.bind("<Configure>", lambda _e: sc.configure(scrollregion=sc.bbox("all")))
+        sc.bind("<Configure>", lambda e: sc.itemconfigure(sid, width=e.width))
+
+        def _wheel(event):
+            if getattr(event, "delta", 0):
+                sc.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            elif getattr(event, "num", None) == 4:
+                sc.yview_scroll(-3, "units")
+            elif getattr(event, "num", None) == 5:
+                sc.yview_scroll(3, "units")
+
+        def _bind_wheel(_event=None):
+            sc.bind_all("<MouseWheel>", _wheel)
+            sc.bind_all("<Button-4>", _wheel)
+            sc.bind_all("<Button-5>", _wheel)
+
+        def _unbind_wheel(_event=None):
+            sc.unbind_all("<MouseWheel>")
+            sc.unbind_all("<Button-4>")
+            sc.unbind_all("<Button-5>")
+
+        for w in (sc, sform):
+            w.bind("<Enter>", _bind_wheel)
+            w.bind("<Leave>", _unbind_wheel)
+
         self.vars = {k: tk.StringVar() for k in EDIT_KEYS}
         self.fullscreen_var = tk.BooleanVar()
         self.version_var = tk.StringVar()
         self.runtime_var = tk.StringVar(value=self.cfg.get("runtime_dir", ""))
         self.official_var = tk.StringVar(value=self.cfg.get("official_launcher_path", ""))
         self.token_var = tk.StringVar(value=self.cfg.get("token", ""))
-        rows = (("MC version (e.g. 1.20.1)", self.vars["mc_version"], None),
+        self.cf_var = tk.StringVar(value=self.cfg.get("curseforge_api_key", ""))
+        sections = (
+            ("Profile - game", (
+                ("MC version (e.g. 1.20.1)", self.vars["mc_version"], None),
                 ("Loader", self.vars["loader"], "loader"),
                 ("Loader version (blank = latest)", self.vars["loader_version"], None),
-                ("Mods dir", self.vars["mods_dir"], None),
-                ("Java path (blank = Mojang runtime)", self.vars["java_path"], None),
                 ("Memory (MB)", self.vars["memory_mb"], None),
                 ("Extra JVM args", self.vars["jvm_args"], None),
-                ("External launch cmd (blank = built-in)", self.vars["launch_cmd"], None),
                 ("Game args (extra Minecraft args)", self.vars["game_args"], None),
                 ("Window width (blank = default)", self.vars["window_width"], None),
                 ("Window height (blank = default)", self.vars["window_height"], None),
                 ("Fullscreen", self.fullscreen_var, "check"),
                 ("Env vars (KEY=VAL;KEY2=VAL2)", self.vars["env_vars"], None),
-                ("Pre-launch cmd (runs before game)", self.vars["pre_launch_cmd"], None),
+                ("Pre-launch cmd (runs before game)", self.vars["pre_launch_cmd"], None))),
+            ("Profile - paths and launcher", (
+                ("Mods dir", self.vars["mods_dir"], None),
+                ("Java path (blank = Mojang runtime)", self.vars["java_path"], None),
+                ("External launch cmd (blank = built-in)", self.vars["launch_cmd"], None),
                 ("Launcher (builtin / official Minecraft)", self.vars["launcher"], "launcher"),
-                ("Installed version id", self.version_var, "ro"),
-                ("Official launcher path (global, blank = auto)", self.official_var, None),
-                ("Runtime dir (global)", self.runtime_var, None),
-                ("GitHub token (global)", self.token_var, "secret"))
-        for r, (lbl, var, kind) in enumerate(rows):
-            ttk.Label(s, text=lbl).grid(row=r, column=0, sticky="w", padx=4, pady=1)
-            if kind == "loader":
-                w = ttk.Combobox(s, textvariable=var, values=LOADERS, state="readonly", width=12)
-            elif kind == "launcher":
-                w = ttk.Combobox(s, textvariable=var, values=LAUNCHERS, state="readonly", width=12)
-            elif kind == "check":
-                w = ttk.Checkbutton(s, variable=var)
-            elif kind == "ro":
-                w = ttk.Entry(s, textvariable=var, state="readonly", width=80)
-            elif kind == "secret":
-                w = ttk.Entry(s, textvariable=var, show="*", width=80)
-            else:
-                w = ttk.Entry(s, textvariable=var, width=80)
-            w.grid(row=r, column=1, sticky="we", padx=4, pady=1)
-            if kind != "ro":
-                var.trace_add("write", lambda *_: self._save_settings())
-        s.columnconfigure(1, weight=1)
-        ttk.Label(s, text="Rows down to 'Launcher' are per-profile. "
-                          "Cmd placeholders: {game_dir} {mods_dir} {mc_version} {loader} {name}",
-                  foreground="gray").grid(row=len(rows), column=1, sticky="w", padx=4)
+                ("Installed version id", self.version_var, "ro"))),
+            ("Global - all profiles", (
+                ("Official launcher path (blank = auto)", self.official_var, None),
+                ("Runtime dir", self.runtime_var, None),
+                ("GitHub token", self.token_var, "secret"),
+                ("CurseForge API key (console.curseforge.com)", self.cf_var, "secret"))))
+        for title, rows in sections:
+            lf = ttk.LabelFrame(sform, text=f" {title} ", padding=(12, 8))
+            lf.pack(fill="x", pady=(0, 12))
+            lf.columnconfigure(1, weight=1)
+            for r, (lbl, var, kind) in enumerate(rows):
+                ttk.Label(lf, text=lbl).grid(row=r, column=0, sticky="w", padx=(0, 14), pady=3)
+                if kind == "loader":
+                    w = ttk.Combobox(lf, textvariable=var, values=LOADERS, state="readonly", width=14)
+                elif kind == "launcher":
+                    w = ttk.Combobox(lf, textvariable=var, values=LAUNCHERS, state="readonly", width=14)
+                elif kind == "check":
+                    w = ttk.Checkbutton(lf, variable=var)
+                elif kind == "ro":
+                    w = ttk.Entry(lf, textvariable=var, state="readonly")
+                elif kind == "secret":
+                    w = ttk.Entry(lf, textvariable=var, show="*")
+                else:
+                    w = ttk.Entry(lf, textvariable=var)
+                w.grid(row=r, column=1, sticky="w" if kind in ("loader", "launcher", "check") else "we", pady=3)
+                if kind != "ro":
+                    var.trace_add("write", lambda *_: self._save_settings())
 
-        self.log_box = tk.Text(body, height=10, state="disabled")
-        self.log_box.pack(fill="both", padx=8, pady=6)
+        # Appearance — background presets + system color picker
+        app_lf = ttk.LabelFrame(sform, text=" Appearance ", padding=(12, 8))
+        app_lf.pack(fill="x", pady=(0, 12))
+        ttk.Label(app_lf, text="Background").grid(row=0, column=0, sticky="w", padx=(0, 14), pady=3)
+        pret = ttk.Frame(app_lf)
+        pret.grid(row=0, column=1, sticky="w", pady=3)
+        for pname, phex in BG_PRESETS:
+            ttk.Button(pret, text=pname, command=lambda h=phex: self.set_theme_bg(h)).pack(side="left", padx=(0, 4))
+        ttk.Button(pret, text="Custom…", command=self._pick_bg_color).pack(side="left", padx=(8, 0))
+        self.theme_swatch = tk.Label(pret, text="  ", width=4, relief="solid", borderwidth=1,
+                                     bg=PAL["bg"], fg=PAL["fg"])
+        self.theme_swatch.pack(side="left", padx=(10, 0))
+        self._themed_tk.append(self.theme_swatch)
+        ttk.Label(app_lf, text="Presets: Snow · Mist · Slate · Charcoal · Midnight. "
+                               "Custom opens the system color wheel.",
+                  style="Muted.TLabel").grid(row=1, column=1, sticky="w", pady=(0, 2))
+
+        ttk.Label(sform, text="Command placeholders: {game_dir} {mods_dir} {mc_version} {loader} {name}",
+                  style="Muted.TLabel").pack(anchor="w")
+
+        # ---- activity log
+        lgh = ttk.Frame(log_fr)
+        lgh.pack(fill="x", pady=(8, 4))
+        ttk.Label(lgh, text="ACTIVITY LOG", style="BgSection.TLabel").pack(side="left")
+        ttk.Button(lgh, text="Clear", command=self._clear_log).pack(side="right")
+        lbf = ttk.Frame(log_fr)
+        lbf.pack(fill="both", expand=True)
+        self.log_box = tk.Text(lbf, height=7, state="disabled", bg=P["surface"], fg=P["fg"],
+                               insertbackground=P["fg"], relief="flat", borderwidth=0, padx=10, pady=8,
+                               wrap="word", font="TkFixedFont", selectbackground=P["accent"])
+        self._themed_tk.append(self.log_box)
+        lsb = ttk.Scrollbar(lbf, orient="vertical", command=self.log_box.yview)
+        self.log_box.configure(yscrollcommand=lsb.set)
+        lsb.pack(side="right", fill="y")
+        self.log_box.pack(side="left", fill="both", expand=True)
+        self.log_box.tag_configure("err", foreground="#ff7b72")
+        self.log_box.tag_configure("ok", foreground="#56d364")
+        self.log_box.tag_configure("warn", foreground=P["amber"])
+        self.log_box.tag_configure("mc", foreground=P["muted"])
+
+    @property
+    def busy(self):
+        return self._busy
+
+    @busy.setter
+    def busy(self, value):
+        self._busy = value
+        try:
+            self.after(0, self._show_busy)  # may be set from worker threads
+        except Exception:
+            pass
+
+    def _show_busy(self):
+        pb = getattr(self, "progress", None)
+        if pb is None:
+            return
+        if self._busy:
+            pb.start(12)
+            self.status_var.set("Working...")
+        else:
+            pb.stop()
+            self.status_var.set("Ready")
+
+    def _clear_log(self):
+        self.log_box.configure(state="normal")
+        self.log_box.delete("1.0", "end")
+        self.log_box.configure(state="disabled")
 
     def log(self, msg):
+        low = msg.lower()
+        if msg.startswith("[mc]"):
+            tag = "mc"
+        elif any(w in low for w in ("error", "failed", "rejected", "mismatch", "missing")):
+            tag = "err"
+        elif "warning" in low:
+            tag = "warn"
+        elif any(w in low for w in ("installed", "verified", "up to date", "is ready", "complete")):
+            tag = "ok"
+        else:
+            tag = ""
+
         def _do():
             self.log_box.configure(state="normal")
-            self.log_box.insert("end", msg + "\n")
+            self.log_box.insert("end", msg + "\n", (tag,) if tag else ())
             if int(self.log_box.index("end-1c").split(".")[0]) > 4000:
                 self.log_box.delete("1.0", "1000.0")
             self.log_box.see("end")
@@ -1615,6 +2380,7 @@ class App(tk.Tk):
         """Modal with code, copy button, and clickable link."""
         win = tk.Toplevel(self)
         win.title("Microsoft login")
+        win.configure(bg=PAL["bg"])
         win.transient(self)
         win.grab_set()
         win.resizable(False, False)
@@ -1625,7 +2391,7 @@ class App(tk.Tk):
 
         link_fr = ttk.Frame(win)
         link_fr.pack(fill="x", padx=16, pady=4)
-        link = tk.Label(link_fr, text=uri, fg="#0645AD", cursor="hand2",
+        link = tk.Label(link_fr, text=uri, fg=PAL["accent_hi"], bg=PAL["bg"], cursor="hand2",
                         font=("", 10, "underline"))
         link.pack(side="left")
 
@@ -1639,7 +2405,7 @@ class App(tk.Tk):
         ttk.Label(win, text="2. Enter this code:").pack(anchor="w", padx=16, pady=(10, 2))
         code_fr = ttk.Frame(win)
         code_fr.pack(fill="x", padx=16, pady=4)
-        tk.Label(code_fr, text=code, font=("", 22, "bold"), fg="#111").pack(side="left")
+        tk.Label(code_fr, text=code, font=("", 22, "bold"), fg=PAL["fg"], bg=PAL["bg"]).pack(side="left")
 
         def copy_code():
             try:
@@ -1733,6 +2499,48 @@ class App(tk.Tk):
         self._update_auth_status()
         self.log("Logged out — log in again to play.")
 
+    def set_theme_bg(self, bg_hex):
+        """Apply a new background color, rebuild the palette, and refresh ttk + tracked widgets."""
+        bg = (bg_hex or DEFAULT_BG).strip()
+        if not re.fullmatch(r"#[0-9A-Fa-f]{6}", bg, re.I):
+            bg = DEFAULT_BG
+        self.cfg["theme_bg"] = bg
+        save_config(self.cfg)
+        apply_theme(self, bg)
+        P = PAL
+        for w in list(self._themed_tk):
+            try:
+                if not w.winfo_exists():
+                    continue
+                if isinstance(w, tk.Text):
+                    w.configure(bg=P["surface"], fg=P["fg"], insertbackground=P["fg"],
+                                selectbackground=P["accent"])
+                    w.tag_configure("warn", foreground=P["amber"])
+                    w.tag_configure("mc", foreground=P["muted"])
+                elif isinstance(w, tk.Canvas):
+                    w.configure(bg=P["bg"])
+                else:
+                    w.configure(bg=P["bg"], fg=P["fg"])
+            except tk.TclError:
+                pass
+        try:
+            if hasattr(self, "theme_swatch") and self.theme_swatch.winfo_exists():
+                self.theme_swatch.configure(bg=P["bg"], fg=P["fg"])
+        except tk.TclError:
+            pass
+
+    def _pick_bg_color(self):
+        """Open the system color wheel / picker for a custom background."""
+        try:
+            from tkinter import colorchooser
+        except ImportError:
+            messagebox.showerror("Color picker", "tkinter.colorchooser is not available on this system.")
+            return
+        initial = self.cfg.get("theme_bg") or DEFAULT_BG
+        result = colorchooser.askcolor(color=initial, title="Background color", parent=self)
+        if result and result[1]:
+            self.set_theme_bg(result[1])
+
     def _save_settings(self):
         if self._loading:
             return
@@ -1743,6 +2551,7 @@ class App(tk.Tk):
         self.cfg["runtime_dir"] = self.runtime_var.get().strip()
         self.cfg["official_launcher_path"] = self.official_var.get().strip()
         self.cfg["token"] = self.token_var.get().strip()
+        self.cfg["curseforge_api_key"] = self.cf_var.get().strip()
         save_config(self.cfg)
 
     def _select_instance(self, name):
@@ -1758,24 +2567,36 @@ class App(tk.Tk):
         save_config(self.cfg)
         self._refresh_list()
         self._update_auth_status()
+        self._schedule_pack_check()
 
     def _refresh_list(self):
+        keep = set(self.tree.selection())
         self.tree.delete(*self.tree.get_children())
-        for repo, i in self.inst["mods"].items():
-            role = "dep of " + ", ".join(i.get("required_by", [])) if i.get("auto") else "added by you"
-            self.tree.insert("", "end", iid=repo, values=(
-                repo, i.get("tag") or "-", i.get("file") or "-", (i.get("sha256") or "-")[:10], role))
-        # Show pack source as a non-selectable info row when present
-        pack = self.inst.get("pack_repo") or ""
-        if pack:
-            ref = self.inst.get("pack_ref") or "main"
-            n_jars = 0
-            try:
-                n_jars = sum(1 for f in os.listdir(self.inst["mods_dir"]) if f.endswith(".jar"))
-            except FileNotFoundError:
-                pass
-            self.tree.insert("", "end", iid="__pack__", values=(
-                f"[pack] {pack}", ref, f"{n_jars} jars in mods/", "-", "installed pack"))
+        latest = self.latest.get(self.cfg["active"], {})
+        rows = list_mod_rows(self.inst)
+        q = self.filter_var.get().strip().lower()
+        shown = 0
+        for r in rows:
+            if q and q not in " ".join((r["name"], r["file"], r["source"], r["role"])).lower():
+                continue
+            lt = latest.get(r["key"], "") if r["key"] else ""
+            tag = ("update" if lt.startswith("update") else "dep" if r["role"].startswith("dependency")
+                   else "pack" if r["key"] is None else "")
+            self.tree.insert("", "end", iid=r["iid"], values=(
+                r["name"], r["version"], r["file"], lt, r["source"], r["role"]), tags=(tag,) if tag else ())
+            shown += 1
+        keep = [i for i in keep if self.tree.exists(i)]
+        if keep:
+            self.tree.selection_set(keep)
+        inst = self.inst
+        self.count_lbl.configure(text=f"{shown} of {len(rows)} shown" if q else f"{len(rows)} jar(s)")
+        if inst.get("pack_source") or inst.get("pack_repo"):
+            src = inst.get("pack_source") or "github"
+            nm = inst.get("pack_name") or inst.get("pack_repo") or "?"
+            ver = inst.get("pack_version") or inst.get("pack_ref") or ""
+            self.pack_lbl.configure(text=f"{nm}   {ver}   -   {src}")
+        else:
+            self.pack_lbl.configure(text="No modpack installed in this profile")
 
     # ---- instances
     def new_instance(self):
@@ -1833,29 +2654,58 @@ class App(tk.Tk):
         self._start_pack_install(FATHOM_PACK["repo"], FATHOM_PACK["ref"], clear_mods=True)
 
     def install_pack_dialog(self):
+        """Install a pack from a GitHub repo, a Modrinth modpack link or a CurseForge modpack link."""
         if self.busy or self.game_proc:
             self.log("Busy or game running — wait.")
             return
-        repo = simpledialog.askstring(
-            "Install pack from GitHub",
-            "GitHub repo (owner/name or URL):\n"
-            "Repo must contain a mods/ folder (and optionally config/, etc.).",
+        text = simpledialog.askstring(
+            "Install pack",
+            "Pack link or GitHub repo:\n"
+            "  GitHub:      owner/name  or  https://github.com/owner/name\n"
+            "  Modrinth:    https://modrinth.com/modpack/<slug>[/version/<id>]\n"
+            "  CurseForge:  https://www.curseforge.com/minecraft/modpacks/<slug>[/files/<id>]",
             parent=self)
-        if not repo:
+        if not text:
             return
-        repo = re.sub(r"^https?://github\.com/", "", repo.strip()).strip("/")
-        repo = re.sub(r"\.git$", "", repo)
-        repo = "/".join(repo.split("/")[:2])
-        if repo.count("/") != 1:
-            messagebox.showerror("Bad repo", "Use owner/name")
+        kind, ref, extra = parse_pack_link(text)
+        if not kind:
+            messagebox.showerror("Bad link", "Couldn't recognise that as a GitHub repo, Modrinth modpack "
+                                             "or CurseForge modpack link.")
             return
+        if kind == "curseforge" and not cf_key(self.cfg):
+            messagebox.showerror("CurseForge API key needed",
+                                 "CurseForge requires a free API key (console.curseforge.com).\n"
+                                 "Paste it into Settings -> CurseForge API key, then try again.")
+            return
+        if kind == "github":
+            self._install_github_pack_flow(ref)
+            return
+        # Modrinth / CurseForge: the pack itself defines MC version + loader
+        use_new = messagebox.askyesno(
+            "New profile?",
+            f"Install '{ref}' into a new profile?\n"
+            f"(No = replace the mods folder of the current profile '{self.cfg['active']}')")
+        if use_new:
+            pname = simpledialog.askstring("Profile name", "Name for the new profile:",
+                                           initialvalue=ref, parent=self)
+            if not pname or re.search(r'[\\/:*?"<>|]', pname):
+                return
+            pname = pname.strip()
+            base, n = pname, 2
+            while pname in self.cfg["instances"]:
+                pname, n = f"{base}-{n}", n + 1
+            self.cfg["instances"][pname] = default_instance(pname, "", "fabric")
+            os.makedirs(self.cfg["instances"][pname]["mods_dir"], exist_ok=True)
+            self._select_instance(pname)
+        self._start_link_pack_install(kind, ref, extra, clear_mods=True)
+
+    def _install_github_pack_flow(self, repo):
         ref = simpledialog.askstring("Branch / tag", "Branch or tag (default: main):",
                                      initialvalue="main", parent=self) or "main"
         clear = messagebox.askyesno(
             "Clear mods?",
             "Replace the current mods folder with the pack's mods?\n"
             "(Recommended for a clean pack install.)")
-        # Optionally create a new profile for this pack
         use_new = messagebox.askyesno(
             "New profile?",
             f"Install into a new profile named after the pack?\n"
@@ -1864,7 +2714,6 @@ class App(tk.Tk):
             pname = repo.split("/")[-1]
             if pname in self.cfg["instances"]:
                 pname = f"{pname}-{ref}"
-            # Ask MC / loader if we can
             mc = simpledialog.askstring("Minecraft version", "MC version for this pack:",
                                         initialvalue=self.inst.get("mc_version") or "1.21.1",
                                         parent=self) or "1.21.1"
@@ -1880,28 +2729,41 @@ class App(tk.Tk):
         self._start_pack_install(repo, ref.strip(), clear_mods=clear)
 
     def reinstall_current_pack(self):
+        """Force a re-download of the current pack (any source)."""
         if self.busy or self.game_proc:
             self.log("Busy or game running — wait.")
             return
-        repo = self.inst.get("pack_repo") or ""
-        ref = self.inst.get("pack_ref") or "main"
+        inst = self.inst
+        if inst.get("pack_source") in ("modrinth", "curseforge") and inst.get("pack_url"):
+            kind, ref, _ = parse_pack_link(inst["pack_url"])
+            if kind == "curseforge" and not cf_key(self.cfg):
+                messagebox.showerror("CurseForge API key needed", "Set your CurseForge API key in Settings first.")
+                return
+            if kind and messagebox.askyesno(
+                    "Reinstall pack",
+                    f"Re-download the latest version of {inst.get('pack_name') or ref}?\n"
+                    "Existing mods folder will be replaced; mods you added yourself are re-installed."):
+                self._start_link_pack_install(kind, ref, "", clear_mods=True, restore=True)
+            return
+        repo = inst.get("pack_repo") or ""
+        ref = inst.get("pack_ref") or "main"
         if not repo:
-            # Fall back to Fathom if this is that profile
             if self.cfg["active"] == FATHOM_PACK["name"]:
                 repo, ref = FATHOM_PACK["repo"], FATHOM_PACK["ref"]
             else:
                 messagebox.showinfo(
                     "No pack",
                     "This profile has no pack recorded.\n"
-                    "Use 'Install Fathom Studios pack' or 'Install pack from GitHub...'.")
+                    "Use 'Install Fathom Studios pack' or 'Install pack from link...'.")
                 return
         if not messagebox.askyesno("Reinstall pack",
                                    f"Re-download and reinstall {repo}@{ref}?\n"
-                                   "Existing mods folder will be replaced."):
+                                   "Existing mods folder will be replaced; mods you added yourself are re-installed."):
             return
-        self._start_pack_install(repo, ref, clear_mods=True)
+        self._start_pack_install(repo, ref, clear_mods=True, restore=True)
 
-    def _start_pack_install(self, repo, ref, clear_mods=True):
+    def _run_pack_job(self, installer, restore=False):
+        """Run installer(inst) in a thread on the active instance, then refresh the UI."""
         self.busy = True
         self._save_settings()
         inst = self.inst
@@ -1909,8 +2771,9 @@ class App(tk.Tk):
 
         def worker():
             try:
-                install_github_pack(repo, inst, self.cfg.get("token", ""), self.log,
-                                    ref=ref, clear_mods=clear_mods)
+                installer(inst)
+                if restore:
+                    self._restore_tracked(inst)
                 save_config(self.cfg)
                 self.log(f"Profile '{name}' is ready. Press 'Install / prepare' then PLAY.")
             except urllib.error.HTTPError as e:
@@ -1920,23 +2783,165 @@ class App(tk.Tk):
                 self.log(f"Pack install ERROR: {e}")
             finally:
                 self.busy = False
-                self.after(0, self._refresh_list)
+                self.after(0, lambda: self._after_pack_job(name))
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _after_pack_job(self, name):
+        if name in self.cfg["instances"] and self.cfg["active"] == name:
+            self._select_instance(name)  # pack may have changed MC version / loader
+
+    def _start_pack_install(self, repo, ref, clear_mods=True, restore=False):
+        self._run_pack_job(lambda inst: install_github_pack(
+            repo, inst, self.cfg.get("token", ""), self.log, ref=ref, clear_mods=clear_mods), restore)
+
+    def _start_link_pack_install(self, kind, ref, extra, clear_mods=True, restore=False):
+        if kind == "modrinth":
+            fn = lambda inst: install_modrinth_pack(ref, extra, inst, self.log, clear_mods)
+        else:
+            fn = lambda inst: install_curseforge_pack(self.cfg, ref, extra, inst, self.log, clear_mods)
+        self._run_pack_job(fn, restore)
+
+    def _restore_tracked(self, inst):
+        """After a pack (re)install wiped mods/, put back the mods the user added themselves."""
+        mods = inst["mods"]
+        if not mods:
+            return
+        self.log("Restoring mods you added...")
+        have = installed_ids(inst)
+        seen = set(mods)
+        for key, info in list(mods.items()):
+            ids = set(info.get("ids") or [])
+            if ids and ids <= have:
+                self.log(f"[{info.get('name') or key}] the pack already includes this mod; dropping your copy")
+                mods.pop(key, None)
+                continue
+            try:
+                self.install_mod(key, inst, bool(info.get("auto")), None, seen, vid=installed_vid(key, info))
+            except Exception as e:
+                self.log(f"[{info.get('name') or key}] restore failed: {e}")
+
+    # ---- pack update check (GitHub packs only)
+    def _schedule_pack_check(self):
+        name = self.cfg["active"]
+        if not pack_is_github(self.inst) or name in self._pack_checked:
+            return
+        self._pack_checked.add(name)
+        threading.Thread(target=self._pack_check_worker, args=(name, False), daemon=True).start()
+
+    def check_pack_update(self):
+        inst = self.inst
+        if not inst.get("pack_repo") and not inst.get("pack_source"):
+            messagebox.showinfo("No pack", "This profile wasn't installed from a pack.")
+            return
+        if not pack_is_github(inst):
+            messagebox.showinfo("GitHub packs only",
+                                "Automatic update checks only work for packs installed from GitHub.\n"
+                                "For Modrinth / CurseForge packs use 'Reinstall pack' to fetch the latest version.")
+            return
+        self.log("Checking the pack for updates...")
+        threading.Thread(target=self._pack_check_worker, args=(self.cfg["active"], True), daemon=True).start()
+
+    def _pack_check_worker(self, name, manual):
+        inst = self.cfg["instances"].get(name)
+        if not inst:
+            return
+        try:
+            r = check_github_pack_update(inst, self.cfg.get("token", ""))
+        except urllib.error.HTTPError as e:
+            hint = " (private repo? set a GitHub token)" if e.code in (401, 403, 404) else ""
+            self.after(0, lambda: self.log(f"Pack update check failed: HTTP {e.code}{hint}"))
+            return
+        except Exception as e:
+            self.after(0, lambda err=str(e): self.log(f"Pack update check failed: {err}"))
+            return
+        if r:
+            self.after(0, lambda: self._pack_check_result(name, r, manual))
+
+    def _pack_check_result(self, name, r, manual):
+        inst = self.cfg["instances"].get(name)
+        if inst is None:
+            return
+        if not r["installed"]:
+            note = ("The installed commit of this pack isn't recorded (it was installed before update tracking "
+                    "existed). Use 'Reinstall pack' once and future updates will be detected.")
+            if manual:
+                messagebox.showinfo("Can't compare", note, parent=self)
+            else:
+                self.log("Pack update check: " + note)
+            return
+        if not r["newer"]:
+            if manual:
+                messagebox.showinfo("Pack up to date", f"{r['repo']} is up to date ({r['installed'][:7]}).", parent=self)
+            else:
+                self.log(f"Pack {r['repo']} is up to date ({r['installed'][:7]}).")
+            return
+        if self.cfg["active"] != name:  # user switched profile while we were checking
+            self._pack_checked.discard(name)
+            self.log(f"Pack update available for '{name}' - will ask when you switch back.")
+            return
+        if not manual and inst.get("pack_skip_sha") == r["latest"]:
+            self.log(f"Pack update available ({r['latest'][:7]}) - you declined it earlier; use 'Check pack update'.")
+            return
+        if self.busy or self.game_proc:
+            self.log("Pack update available, but the launcher is busy / the game is running. "
+                     "Use 'Check pack update' later.")
+            return
+        msg = (f"A newer version of the modpack {r['repo']} ({r['ref']}) is available.\n\n"
+               f"Installed:  {r['installed'][:7]}\nLatest:     {r['latest'][:7]}\n")
+        if r["message"]:
+            msg += f"Latest change: {r['message'][:200]}\n"
+        msg += ("\nUpdate now?\nThe mods folder is replaced and the pack's config files are overwritten. "
+                "Mods you added yourself are re-installed afterwards.")
+        if messagebox.askyesno("Modpack update", msg, parent=self):
+            self._start_pack_install(r["repo"], r["ref"], clear_mods=True, restore=True)
+        else:
+            inst["pack_skip_sha"] = r["latest"]
+            save_config(self.cfg)
+            self.log("Pack update skipped. It won't be offered again until there is a newer commit.")
+
     # ---- mod actions
     def add_repo(self):
-        repo = self.repo_var.get().strip()
-        repo = re.sub(r"^https?://github\.com/", "", repo).strip("/")
-        repo = re.sub(r"\.git$", "", repo)
-        repo = "/".join(repo.split("/")[:2])
-        if repo.count("/") != 1:
-            messagebox.showerror("Bad repo", "Use owner/name")
+        text = self.repo_var.get().strip()
+        src, ref = parse_mod_link(text)
+        if not src:
+            messagebox.showerror("Bad link", "Use a GitHub owner/name or URL, a Modrinth mod link, "
+                                             "a CurseForge mod link, or modrinth:<slug> / curseforge:<slug>.")
+            return
+        if src == "curseforge" and not cf_key(self.cfg):
+            messagebox.showerror("CurseForge API key needed",
+                                 "CurseForge requires a free API key (console.curseforge.com).\n"
+                                 "Paste it into Settings -> CurseForge API key, then try again.")
             return
         self.repo_var.set("")
-        self.update_mods(only=[repo])
+        if src == "github":
+            self.update_mods(only=[ref], explicit=True)
+            return
+        if self.busy:
+            self.log("Busy, wait for the current job.")
+            return
+        if self.game_proc:
+            self.log("Close the game before changing mods.")
+            return
+        self.busy = True
+        threading.Thread(target=self._add_worker, args=(self.inst, src, ref), daemon=True).start()
 
-    def update_mods(self, selected_only=False, only=None):
+    def _add_worker(self, inst, src, ref):
+        try:
+            key, name = resolve_mod(src, ref, self.cfg)
+            self._names[key] = name
+            self.log(f"Resolved {src} '{ref}' -> {name}")
+        except urllib.error.HTTPError as e:
+            self.log(f"[{ref}] {src} lookup failed: HTTP {e.code}")
+            self.busy = False
+            return
+        except Exception as e:
+            self.log(f"[{ref}] {src} lookup failed: {e}")
+            self.busy = False
+            return
+        self._mod_worker(inst, [key], explicit=True)  # releases busy
+
+    def update_mods(self, selected_only=False, only=None, explicit=False, pins=None):
         if self.busy:
             self.log("Busy, wait for the current job.")
             return
@@ -1944,38 +2949,68 @@ class App(tk.Tk):
             self.log("Close the game before changing mods.")
             return
         if only is None:
-            only = list(self.tree.selection()) if selected_only else list(self.inst["mods"])
+            sel = [k for k in self.tree.selection() if k in self.inst["mods"]]
+            only = sel if selected_only else list(self.inst["mods"])
         if not only:
             self.log("Nothing to update.")
             return
         self.busy = True
-        threading.Thread(target=self._mod_worker, args=(self.inst, only), daemon=True).start()
+        threading.Thread(target=self._mod_worker, args=(self.inst, only, explicit, pins), daemon=True).start()
 
-    def _mod_worker(self, inst, repos):
+    def _mod_worker(self, inst, keys, explicit=False, pins=None):
         try:
             os.makedirs(inst["mods_dir"], exist_ok=True)
-            seen = set(repos)
-            for r in repos:
+            seen = set(keys)
+            for k in keys:
                 try:
-                    self.install_mod(r, inst, auto=False, parent=None, seen=seen)
+                    # updating keeps a dependency a dependency; only an explicit add makes it "yours"
+                    auto = False if explicit else bool(inst["mods"].get(k, {}).get("auto"))
+                    self.install_mod(k, inst, auto=auto, parent=None, seen=seen, vid=(pins or {}).get(k))
                 except urllib.error.HTTPError as e:
                     hint = " (private repo? set a token)" if e.code in (401, 403, 404) else ""
-                    self.log(f"[{r}] HTTP {e.code}{hint}")
+                    self.log(f"[{k}] HTTP {e.code}{hint}")
                 except Exception as e:
-                    self.log(f"[{r}] ERROR: {e}")
+                    self.log(f"[{k}] ERROR: {e}")
             self.log("Done.")
         finally:
             self.busy = False
             self.after(0, self._refresh_list)
 
-    def install_mod(self, repo, inst, auto, parent, seen):
+    def _mod_label(self, key):
+        """Human name for a mod key (repo for GitHub, project title for Modrinth/CurseForge)."""
+        if mod_source(key) == "github":
+            return key
+        n = self._names.get(key)
+        if not n:
+            for i in self.cfg["instances"].values():
+                n = (i["mods"].get(key) or {}).get("name")
+                if n:
+                    break
+        if not n:
+            src, pid = key.split(":", 1)
+            try:
+                n = (mr_json(f"/project/{urllib.parse.quote(pid)}")["title"] if src == "modrinth"
+                     else cf_json(self.cfg, f"/mods/{pid}")["data"]["name"])
+            except Exception:
+                n = key
+        self._names[key] = n
+        return n
+
+    def install_mod(self, key, inst, auto, parent, seen, vid=None, expect_id=None):
+        """Install/update one mod from its own source (GitHub, Modrinth or CurseForge), plus its dependencies.
+        vid pins a specific version (GitHub tag / Modrinth version id / CurseForge file id)."""
+        if mod_source(key) != "github":
+            return self._install_remote(key, inst, auto, parent, seen, vid, expect_id)
+        repo = key
         token = self.cfg["token"]
         loader, mods_dir = inst["loader"], inst["mods_dir"]
         self.log(f"[{repo}] checking ({loader} {inst['mc_version'] or 'any MC'})...")
-        rel, cands = find_release(repo, inst, token)
+        rel, cands = find_release(repo, inst, token, tag=vid)
         if not rel:
-            self.log(f"[{repo}] no release with a matching jar for {loader} {inst['mc_version']}")
+            self.log(f"[{repo}] no release with a matching jar for {loader} {inst['mc_version']}"
+                     + (f" (version {vid})" if vid else ""))
             return
+        os.makedirs(mods_dir, exist_ok=True)
         old = inst["mods"].get(repo, {})
         tag = rel["tag_name"]
         best = cands[0][1]
@@ -2027,7 +3062,13 @@ class App(tk.Tk):
 
         mf = meta_for(meta, loader)
         info = inst["mods"].setdefault(repo, {})
-        info.update(tag=tag, file=fname, sha256=sha, ids=sorted(mf.get("ids", [])), loaders=sorted(meta))
+        info.update(name=repo, tag=tag, file=fname, sha256=sha, ids=sorted(mf.get("ids", [])), loaders=sorted(meta))
+        self._record_role(info, auto, parent)
+        save_config(self.cfg)
+        self._install_declared_deps(repo, mf, inst, seen)
+
+    @staticmethod
+    def _record_role(info, auto, parent):
         if not auto:
             info["auto"] = False
         else:
@@ -2036,54 +3077,336 @@ class App(tk.Tk):
             rb = info.setdefault("required_by", [])
             if parent not in rb:
                 rb.append(parent)
+
+    def _install_remote(self, key, inst, auto, parent, seen, vid=None, expect_id=None):
+        """Modrinth / CurseForge install of one mod + its required dependencies (from the source's own metadata)."""
+        src = mod_source(key)
+        loader, mods_dir = inst["loader"], inst["mods_dir"]
+        label = self._mod_label(key)
+        self.log(f"[{label}] checking {src} ({loader} {inst['mc_version'] or 'any MC'})...")
+        versions = list_versions(key, inst, self.cfg)
+        if vid:
+            v = next((x for x in versions if x["id"] == vid), None)
+            if not v:
+                self.log(f"[{label}] version {vid} isn't available for {loader} {inst['mc_version']}")
+                return
+        else:
+            v = pick_latest(versions)
+        if not v:
+            self.log(f"[{label}] no version with a jar for {loader} {inst['mc_version'] or 'any MC'} on {src}")
+            return
+        os.makedirs(mods_dir, exist_ok=True)
+        old = inst["mods"].get(key, {})
+        f = v["files"][0]
+        fname = os.path.basename(f["name"])
+        dest = os.path.join(mods_dir, fname)
+
+        if old.get("version_id") == v["id"] and old.get("file") == fname and os.path.exists(dest) \
+                and sha256_file(dest) == old.get("sha256"):
+            self.log(f"[{label}] up to date ({v['label']})")
+            sha, meta = old["sha256"], read_meta(dest)
+        else:
+            self.log(f"[{label}] downloading {fname} ({v['label']})")
+            data = fetch_bytes(f["url"], timeout=120)
+            if f.get("sha1") and hashlib.sha1(data).hexdigest() != f["sha1"].lower():
+                self.log(f"[{label}] HASH MISMATCH for {fname} (sha1) - rejected")
+                return
+            if not f.get("sha1") and f.get("sha512") and hashlib.sha512(data).hexdigest() != f["sha512"].lower():
+                self.log(f"[{label}] HASH MISMATCH for {fname} (sha512) - rejected")
+                return
+            verified = "sha1" if f.get("sha1") else ("sha512" if f.get("sha512") else None)
+            sha = hashlib.sha256(data).hexdigest()
+            self.log(f"[{label}] {verified} verified against {src}" if verified else
+                     f"[{label}] no published hash; recorded sha256 {sha[:12]}.. (trust on first use)")
+            tmp = os.path.join(mods_dir, fname + ".part")
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+            meta = read_meta(tmp)
+            if meta and not meta_for(meta, loader):
+                self.log(f"[{label}] {fname} is a {'/'.join(meta)} jar, instance is {loader} - rejected")
+                os.remove(tmp)
+                return
+            ids = set(meta_for(meta, loader).get("ids", []))
+            if expect_id and ids and expect_id not in ids:
+                self.log(f"[{label}] doesn't provide mod id '{expect_id}' (wrong project) - rejected")
+                os.remove(tmp)
+                return
+            if auto and key not in inst["mods"] and ids and ids <= installed_ids(inst):
+                self.log(f"[{label}] already installed (provided by another jar) - skipped")
+                os.remove(tmp)
+                return
+            if not meta:
+                self.log(f"[{label}] warning: couldn't read mod metadata from {fname}")
+            os.replace(tmp, dest)
+            if old.get("file") and old["file"] != fname:
+                try:
+                    os.remove(os.path.join(mods_dir, old["file"]))
+                except FileNotFoundError:
+                    pass
+            self.log(f"[{label}] installed {fname}")
+
+        mf = meta_for(meta, loader)
+        info = inst["mods"].setdefault(key, {})
+        info.update(name=label, tag=v["label"], version_id=v["id"], file=fname, sha256=sha,
+                    ids=sorted(mf.get("ids", [])), loaders=sorted(meta))
+        self._record_role(info, auto, parent)
         save_config(self.cfg)
 
+        # required dependencies as declared by the source itself
+        for d in v.get("deps", []):
+            pid2 = d.get("project")
+            if not pid2:
+                continue
+            k2 = f"{src}:{pid2}"
+            if k2 == key:
+                continue
+            have = inst["mods"].get(k2)
+            if have and os.path.exists(os.path.join(mods_dir, have.get("file") or "\0")):
+                rb = have.setdefault("required_by", [])
+                if key not in rb:
+                    rb.append(key)
+                    save_config(self.cfg)
+                continue
+            if k2 in seen:
+                continue
+            seen.add(k2)
+            self.log(f"[{label}] requires {self._mod_label(k2)}")
+            try:
+                self.install_mod(k2, inst, True, key, seen)
+            except Exception as e:
+                self.log(f"[{self._mod_label(k2)}] dependency install failed: {e}")
+        # deps only visible inside the jar (not listed on the project page)
+        self._install_declared_deps(key, mf, inst, seen)
+
+    def _install_declared_deps(self, key, mf, inst, seen):
+        """Resolve dependencies declared inside the jar: dep_map -> GitHub, otherwise Modrinth by mod id."""
+        label = self._mod_label(key)
         dep_map = {**BUILTIN_DEP_MAP, **self.cfg.get("dep_map", {})}
         have = installed_ids(inst)
         for d in mf.get("deps", []):
             if not d or d in SKIP_DEPS or d in have:
                 continue
             r2 = dep_map.get(d)
-            if not r2:
-                self.log(f"[{repo}] requires '{d}' - no known GitHub repo; add it yourself or map it in dep_map")
-                continue
-            if r2 in seen:
-                continue
-            seen.add(r2)
-            self.log(f"[{repo}] requires '{d}' -> {r2}")
             try:
-                self.install_mod(r2, inst, True, repo, seen)
+                if r2:
+                    if r2 in seen:
+                        continue
+                    seen.add(r2)
+                    self.log(f"[{label}] requires '{d}' -> {r2}")
+                    self.install_mod(r2, inst, True, key, seen)
+                else:
+                    try:
+                        p = mr_json(f"/project/{urllib.parse.quote(d)}")
+                    except urllib.error.HTTPError:
+                        p = None
+                    if not p or p.get("project_type") != "mod":
+                        self.log(f"[{label}] requires '{d}' - couldn't find it on Modrinth; "
+                                 "add it yourself or map it in dep_map")
+                        continue
+                    k2 = f"modrinth:{p['id']}"
+                    if k2 in seen:
+                        continue
+                    seen.add(k2)
+                    self._names[k2] = p.get("title") or d
+                    self.log(f"[{label}] requires '{d}' -> Modrinth {self._names[k2]}")
+                    self.install_mod(k2, inst, True, key, seen, expect_id=d)
             except Exception as e:
-                self.log(f"[{r2}] dependency install failed: {e}")
+                self.log(f"[{label}] dependency '{d}' failed: {e}")
             have = installed_ids(inst)
 
     def remove_selected(self):
-        sel = [r for r in self.tree.selection() if r != "__pack__"]
+        sel = list(self.tree.selection())
         if not sel or self.game_proc:
             return
         mods = self.inst["mods"]
         mods_dir = self.inst["mods_dir"]
 
-        def delete(repo):
-            info = mods.pop(repo, {})
+        def nice(key):
+            return mods.get(key, {}).get("name") or key
+
+        def delete(key):
+            info = mods.pop(key, {})
             p = os.path.join(mods_dir, info.get("file") or "\0")
             if info.get("file") and os.path.exists(p):
                 os.remove(p)
-            self.log(f"Removed {repo}")
+            self.log(f"Removed {info.get('name') or key}")
 
-        for r in sel:
-            delete(r)
+        jars = [i[4:] for i in sel if i.startswith("jar:")]
+        if jars and messagebox.askyesno(
+                "Remove jars", f"Delete {len(jars)} jar(s) that the launcher doesn't track "
+                               f"(from the pack or added by hand)?\n\n" + "\n".join(jars[:10])
+                               + ("\n..." if len(jars) > 10 else "")):
+            for fn in jars:
+                try:
+                    os.remove(os.path.join(mods_dir, fn))
+                    self.log(f"Removed {fn}")
+                except OSError as e:
+                    self.log(f"Could not remove {fn}: {e}")
+        for k in [i for i in sel if i in mods]:
+            delete(k)
         changed = True
         while changed:  # clean up auto-installed deps nobody needs anymore
             changed = False
             for r, i in list(mods.items()):
                 if i.get("auto"):
                     i["required_by"] = [x for x in i.get("required_by", []) if x in mods]
-                    if not i["required_by"] and messagebox.askyesno("Orphaned dependency", f"{r} was only needed by removed mods. Remove it too?"):
+                    if not i["required_by"] and messagebox.askyesno(
+                            "Orphaned dependency", f"{nice(r)} was only needed by removed mods. Remove it too?"):
                         delete(r)
                         changed = True
         save_config(self.cfg)
         self._refresh_list()
+
+    # ---- update check + version picker (uses each mod's own source)
+    def check_updates(self):
+        if self.busy:
+            self.log("Busy, wait for the current job.")
+            return
+        inst = self.inst
+        keys = [k for k in self.tree.selection() if k in inst["mods"]] or list(inst["mods"])
+        if not keys:
+            self.log("No tracked mods to check.")
+            return
+        self.busy = True
+        threading.Thread(target=self._check_updates_worker, args=(self.cfg["active"], inst, keys),
+                         daemon=True).start()
+
+    def _check_updates_worker(self, name, inst, keys):
+        pending, latest = [], self.latest.setdefault(name, {})
+
+        def one(k):
+            vs = list_versions(k, inst, self.cfg)
+            return vs, pick_latest(vs)
+
+        try:
+            self.log(f"Checking {len(keys)} mod(s) for updates on their sources...")
+            with ThreadPoolExecutor(4) as ex:
+                futs = {ex.submit(one, k): k for k in keys}
+                for fut in as_completed(futs):
+                    k = futs[fut]
+                    try:
+                        vs, best = fut.result()
+                    except Exception as e:
+                        self.log(f"[{self._mod_label(k)}] update check failed: {e}")
+                        continue
+                    if not best:
+                        latest[k] = "?"
+                        continue
+                    cur = installed_vid(k, inst["mods"].get(k, {}))
+                    ids = [v["id"] for v in vs]
+                    # newer only if the installed one is not already at/above the latest release
+                    newer = cur not in ids or ids.index(cur) > ids.index(best["id"])
+                    latest[k] = ("update: " + best["label"]) if newer else "up to date"
+                    if newer:
+                        pending.append((k, best["label"]))
+        finally:
+            self.busy = False
+            self.after(0, lambda: self._updates_done(name, pending))
+
+    def _updates_done(self, name, pending):
+        self._refresh_list()
+        if not pending:
+            self.log("Everything is up to date.")
+            return
+        lines = [f"  {self._names.get(k) or self.inst['mods'].get(k, {}).get('name') or k}  ->  {lab}"
+                 for k, lab in pending[:15]]
+        if messagebox.askyesno("Updates available",
+                               f"{len(pending)} update(s) available:\n\n" + "\n".join(lines)
+                               + ("\n  ..." if len(pending) > 15 else "") + "\n\nUpdate them now?",
+                               parent=self):
+            self.update_mods(only=[k for k, _ in pending])
+
+    def show_versions(self):
+        sel = [k for k in self.tree.selection() if k in self.inst["mods"]]
+        if len(sel) != 1:
+            messagebox.showinfo("Versions", "Select exactly one tracked mod in the list first.", parent=self)
+            return
+        if self.busy or self.game_proc:
+            self.log("Busy or game running — wait.")
+            return
+        key, inst = sel[0], self.inst
+        info = inst["mods"][key]
+        cur = installed_vid(key, info)
+        win = tk.Toplevel(self)
+        win.title(f"Versions - {info.get('name') or key}")
+        win.geometry("820x420")
+        win.configure(bg=PAL["bg"])
+        win.transient(self)
+        status = ttk.Label(win, text=f"Loading versions from {mod_source(key)} "
+                                     f"({inst['loader']} {inst['mc_version'] or 'any MC'})...")
+        status.pack(anchor="w", padx=8, pady=6)
+        cols = ("version", "channel", "date", "mc", "file")
+        frame = ttk.Frame(win)
+        frame.pack(fill="both", expand=True, padx=8)
+        vt = ttk.Treeview(frame, columns=cols, show="headings", selectmode="browse")
+        for c, w in zip(cols, (170, 70, 90, 150, 300)):
+            vt.heading(c, text=c)
+            vt.column(c, width=w)
+        vsb = ttk.Scrollbar(frame, orient="vertical", command=vt.yview)
+        vt.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        vt.pack(side="left", fill="both", expand=True)
+
+        def fill(versions, err=None):
+            if not win.winfo_exists():
+                return
+            if err:
+                status.configure(text=f"Couldn't load versions: {err}")
+                return
+            status.configure(text=f"{len(versions)} version(s) found. Installed: {info.get('tag') or '-'}")
+            for v in versions:
+                fn = v.get("file_name") or (v["files"][0]["name"] if v.get("files") else "")
+                mark = "  (installed)" if v["id"] == cur else ""
+                vt.insert("", "end", iid=v["id"], values=(
+                    v["label"] + mark, v["channel"], (v["date"] or "")[:10],
+                    ", ".join(v.get("mc") or [])[:40], fn))
+            if cur and vt.exists(cur):
+                vt.selection_set(cur)
+                vt.see(cur)
+
+        def load():
+            try:
+                vs = list_versions(key, inst, self.cfg)
+                self.after(0, lambda: fill(vs))
+            except Exception as e:
+                self.after(0, lambda err=str(e): fill([], err))
+
+        threading.Thread(target=load, daemon=True).start()
+
+        def install():
+            s = vt.selection()
+            if not s:
+                return
+            if s[0] == cur:
+                messagebox.showinfo("Versions", "That version is already installed.", parent=win)
+                return
+            win.destroy()
+            self.update_mods(only=[key], pins={key: s[0]})
+
+        btns = ttk.Frame(win)
+        btns.pack(fill="x", padx=8, pady=8)
+        ttk.Button(btns, text="Install selected version", command=install).pack(side="left")
+        ttk.Button(btns, text="Close", command=win.destroy).pack(side="right")
+        vt.bind("<Double-1>", lambda _e: install())
+
+    def export_modlist(self):
+        inst = self.inst
+        rows = list_mod_rows(inst)
+        lines = [f"# {self.cfg['active']} - {inst['loader']} {inst['mc_version'] or '?'} - {len(rows)} jar(s)", ""]
+        for r in rows:
+            lines.append(f"{r['file']}  |  {r['name']} {r['version'] if r['version'] != '-' else ''}".rstrip()
+                         + f"  |  {r['source']}  |  {r['role']}")
+        text = "\n".join(lines) + "\n"
+        path = os.path.join(self._game_dir(), "modlist.txt")
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self.log(f"Mod list ({len(rows)} jars) saved to {path} and copied to the clipboard.")
+        except Exception as e:
+            self.log(f"Could not save the mod list: {e}")
 
     def verify(self):
         inst = self.inst
