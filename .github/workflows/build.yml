@@ -205,13 +205,6 @@ jobs:
         shell: bash
         run: |
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "SkyLauncher 3.1.2" --notes "SkyLauncher 3.1.2 improves installing SkyLauncher on Windows, macOS, and Linux.
-
-The Windows installer now offers a desktop shortcut and an option to open SkyLauncher when installation finishes. Both are selected by default.
-The universal Mac and Linux installers also offer a shortcut and opening the app, defaulting to Yes.
-
-Java is included in the main installers. Existing Minecraft worlds, mods, and settings are preserved.
-
-If an older Windows version is still listed separately in Installed apps, you can uninstall that older version."
+            gh release create "$TAG" --title "SkyLauncher 3.1.2" --notes "SkyLauncher 3.1.2 improves the Windows, Mac and Linux installers. Desktop shortcut and launch options default to Yes. Java is included. Minecraft worlds, mods and settings are kept. You can uninstall the older Windows installer separately if needed."
           fi
           gh release upload "$TAG" release-assets/* --clobber
