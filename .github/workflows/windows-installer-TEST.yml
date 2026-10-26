@@ -1,0 +1,44 @@
+name: Build SkyLauncher Windows TEST installer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/windows-installer-TEST.yml'
+      - 'windows-installer/SkyLauncher-TEST.iss'
+      - 'build-windows-TEST.ps1'
+      - 'tests/test_windows_TEST.ps1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    name: Build and test Windows setup
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install Inno Setup if needed
+        shell: pwsh
+        run: |
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
+          if (!(Test-Path $compiler)) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed.' }
+          }
+          if (!(Test-Path $compiler)) { throw 'Inno Setup was not found.' }
+      - name: Build and test installer
+        shell: pwsh
+        run: ./build-windows-TEST.ps1 -TestInstaller
+      - name: Upload EXE for testing (not a Release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyLauncher-Windows-TEST
+          path: dist/SkyLauncher-3.1.1-TEST.exe
+          if-no-files-found: error
+          retention-days: 14
