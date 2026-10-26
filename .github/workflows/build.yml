@@ -30,11 +30,18 @@ jobs:
             name: SkyLauncher
             icon: ico
             label: Windows
+          - os: macos-15-intel
+            package: dmg
+            name: SkyLauncher
+            icon: icns
+            label: macOS-Intel
+            mac_arch: intel
           - os: macos-15
             package: dmg
             name: SkyLauncher
             icon: icns
-            label: macOS
+            label: macOS-Apple-Silicon
+            mac_arch: arm64
           - os: ubuntu-24.04
             package: deb
             name: skylauncher
@@ -70,6 +77,21 @@ jobs:
             --input input --main-jar SkyLauncher.jar --main-class SkyLauncher \
             --dest dist --vendor SkyLauncher "${icon_arg[@]}" "${os_arg[@]}" \
             --description 'SkyLauncher native installer - application and Java bundled locally'
+      - name: Identify macOS installer architecture in filename
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          MAC_ARCH: ${{ matrix.mac_arch }}
+        run: |
+          shopt -s nullglob
+          packages=(dist/*.dmg)
+          if (( ${#packages[@]} != 1 )); then
+            echo "Expected exactly one macOS DMG, found ${#packages[@]}" >&2
+            exit 1
+          fi
+          for pkg in "${packages[@]}"; do
+            mv -- "$pkg" "${pkg%.dmg}-${MAC_ARCH}.dmg"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: SkyLauncher-Offline-${{ matrix.label }}
