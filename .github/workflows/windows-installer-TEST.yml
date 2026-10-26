@@ -36,6 +36,7 @@ jobs:
         shell: pwsh
         run: ./build-windows-TEST.ps1 -TestInstaller
       - name: Upload EXE for testing (not a Release)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: SkyLauncher-Windows-TEST
