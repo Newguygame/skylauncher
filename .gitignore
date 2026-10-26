@@ -1,1 +1,10 @@
-ghmodlauncher.py.bak
+build/
+input/
+dist/
+*.class
+*.part
+__pycache__/
+.pytest_cache/
+.DS_Store
+Thumbs.db
+*.log

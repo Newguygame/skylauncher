@@ -1,0 +1,99 @@
+name: Test SkyLauncher compatibility
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  native-java:
+    name: Java and launcher tests (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            runner: windows-2025
+          - name: Ubuntu x64
+            runner: ubuntu-24.04
+          - name: Ubuntu ARM64
+            runner: ubuntu-24.04-arm
+          - name: macOS Intel
+            runner: macos-15-intel
+          - name: macOS Apple Silicon
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile, package and test launcher + bundled setup
+        shell: bash
+        run: bash tests/ci-build.sh
+      - uses: actions/upload-artifact@v4
+        if: matrix.name == 'Ubuntu x64'
+        with:
+          name: SkyLauncher-Tested-JAR
+          path: build/SkyLauncher-ci.jar
+          retention-days: 7
+
+  linux-distros:
+    name: Java tests (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Fedora
+            image: fedora:latest
+            install: dnf -y install java-21-openjdk-devel git tar gzip ca-certificates
+          - name: Arch Linux
+            image: archlinux:latest
+            install: pacman -Sy --noconfirm --needed jdk21-openjdk git tar gzip ca-certificates
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: Install Java inside container
+        run: ${{ matrix.install }}
+      - uses: actions/checkout@v4
+      - name: Build and test packaged JARs
+        run: bash tests/ci-build.sh
+
+  website:
+    name: Website download tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: JavaScript syntax and mocked GitHub release tests
+        run: |
+          node --check docs/app.js
+          node --check docs/logo.js
+          node tests/test_logic.js
+
+  linux-gui:
+    name: Linux graphical startup smoke test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install virtual display
+        run: sudo apt-get update && sudo apt-get install -y xvfb xauth x11-utils
+      - name: Compile launcher
+        run: |
+          mkdir -p build/gui-classes
+          javac --release 17 -encoding UTF-8 -d build/gui-classes src/SkyLauncher.java
+      - name: Open graphical window using virtual screen
+        run: xvfb-run -a bash tests/smoke-gui.sh

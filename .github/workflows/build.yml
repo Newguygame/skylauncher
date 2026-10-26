@@ -1,0 +1,100 @@
+name: Build SkyLauncher native offline installers
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+    paths:
+      - 'src/**'
+      - 'icons/**'
+      - 'build-local.sh'
+      - 'build-windows-full-offline.ps1'
+      - '.github/workflows/build.yml'
+      - 'README.md'
+permissions:
+  contents: write
+jobs:
+  verify:
+    name: Cross-platform tests before packaging
+    uses: ./.github/workflows/test.yml
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            package: exe
+            name: SkyLauncher
+            icon: ico
+            label: Windows
+          - os: macos-15
+            package: dmg
+            name: SkyLauncher
+            icon: icns
+            label: macOS
+          - os: ubuntu-24.04
+            package: deb
+            name: skylauncher
+            icon: png
+            label: Linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Linux packaging prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y fakeroot
+      - name: Build launchable JAR from repository files
+        shell: bash
+        run: |
+          mkdir -p build/classes build/launcher input dist
+          javac --release 17 -encoding UTF-8 -d build/classes src/SkyLauncher.java
+          find build/classes -maxdepth 1 -name 'SkyLauncher*.class' -exec cp {} build/launcher/ \;
+          if [[ -f icons/SkyLauncher.png ]]; then mkdir -p build/launcher/icons && cp icons/SkyLauncher.png build/launcher/icons/; fi
+          jar --create --file input/SkyLauncher.jar --main-class SkyLauncher -C build/launcher .
+          java -jar input/SkyLauncher.jar --selftest
+      - name: Build native offline installer with Java bundled
+        shell: bash
+        run: |
+          icon_arg=()
+          if [[ -f 'icons/SkyLauncher.${{ matrix.icon }}' ]]; then icon_arg=(--icon 'icons/SkyLauncher.${{ matrix.icon }}'); fi
+          os_arg=()
+          if [[ '${{ runner.os }}' == 'Windows' ]]; then os_arg=(--win-shortcut --win-menu); fi
+          jpackage --type '${{ matrix.package }}' --name '${{ matrix.name }}' --app-version 3.1.1 \
+            --input input --main-jar SkyLauncher.jar --main-class SkyLauncher \
+            --dest dist --vendor SkyLauncher "${icon_arg[@]}" "${os_arg[@]}" \
+            --description 'SkyLauncher native installer - application and Java bundled locally'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SkyLauncher-Offline-${{ matrix.label }}
+          path: dist/*
+          if-no-files-found: error
+      - name: Upload portable JAR
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyLauncher-Portable-JAR
+          path: input/SkyLauncher.jar
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: SkyLauncher-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish installers and JAR to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then gh release create "$TAG" --title "SkyLauncher $TAG" --generate-notes; fi
+          gh release upload "$TAG" release-assets/* --clobber
