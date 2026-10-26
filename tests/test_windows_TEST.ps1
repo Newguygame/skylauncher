@@ -18,7 +18,7 @@ try {
 
   $installedApp = Join-Path $destination 'SkyLauncher.exe'
   if (!(Test-Path $installedApp)) { throw 'SkyLauncher.exe was not installed.' }
-  if (!(Test-Path (Join-Path $destination 'runtime\bin\java.exe'))) { throw 'Bundled Java was not installed.' }
+  if (!(Test-Path (Join-Path $destination 'runtime\release'))) { throw 'Bundled Java runtime was not installed.' }
   if ((Test-Path $desktop) -and !(Test-Path $shortcut)) { throw 'Desktop shortcut was not created.' }
 
   $launched = Start-Process -FilePath $installedApp -ArgumentList '--selftest' -Wait -PassThru

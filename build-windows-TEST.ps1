@@ -25,7 +25,7 @@ if (Test-Path 'icons\SkyLauncher.ico') { $jpackageArgs += @('--icon', 'icons\Sky
 & jpackage @jpackageArgs
 if ($LASTEXITCODE -ne 0) { throw 'Could not build the Windows application.' }
 if (!(Test-Path 'build\windows-app\SkyLauncher\SkyLauncher.exe')) { throw 'The Windows application is missing.' }
-if (!(Test-Path 'build\windows-app\SkyLauncher\runtime\bin\java.exe')) { throw 'Java was not included.' }
+if (!(Test-Path 'build\windows-app\SkyLauncher\runtime\release')) { throw 'Bundled Java runtime is missing.' }
 
 $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
 if (!(Test-Path $iscc)) { throw 'Inno Setup 6 is required to build the Windows installer.' }
