@@ -4,7 +4,7 @@ Pick the installer for your computer. You only need to run **one** installer. It
 
 ## Mac
 
-[Download the Mac installer](macOS/SkyLauncher-Universal-macOS-Installer.zip).
+[Download the Mac installer](https://github.com/Newguygame/skylauncher/raw/main/installers/macOS/SkyLauncher-Universal-macOS-Installer.zip).
 
 1. Unzip the download.
 2. Double-click `Install-SkyLauncher-Mac.command`.
@@ -20,7 +20,7 @@ Works with Intel Macs and Apple Silicon Macs.
 
 ## Linux
 
-[Download the Linux installer](linux/SkyLauncher-Universal-Linux-Installer.zip).
+[Download the Linux installer](https://github.com/Newguygame/skylauncher/raw/main/installers/linux/SkyLauncher-Universal-Linux-Installer.zip).
 
 1. Unzip the download.
 2. Open a terminal in the folder.
