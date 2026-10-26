@@ -12,7 +12,7 @@ SkyLauncher helps you play Minecraft with different game versions and mods. It w
 
 **Mac**
 
-1. [Download the Mac installer](installers/macOS/SkyLauncher-Universal-macOS-Installer.zip).
+1. [Download the Mac installer](https://github.com/Newguygame/skylauncher/raw/main/installers/macOS/SkyLauncher-Universal-macOS-Installer.zip).
 2. Unzip the file.
 3. Double-click `Install-SkyLauncher-Mac.command` and follow the steps.
 
@@ -20,7 +20,7 @@ The installer picks the right version for your Mac.
 
 **Linux**
 
-1. [Download the Linux installer](installers/linux/SkyLauncher-Universal-Linux-Installer.zip).
+1. [Download the Linux installer](https://github.com/Newguygame/skylauncher/raw/main/installers/linux/SkyLauncher-Universal-Linux-Installer.zip).
 2. Unzip the file and open a terminal in that folder.
 3. Run:
 
