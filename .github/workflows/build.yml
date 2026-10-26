@@ -9,6 +9,8 @@ on:
       - 'icons/**'
       - 'build-local.sh'
       - 'build-windows-full-offline.ps1'
+      - 'windows-installer/SkyLauncher.iss'
+      - 'tests/test_windows_installer.ps1'
       - '.github/workflows/build.yml'
       - 'linux-portable/**'
       - 'tests/test_linux_portable.sh'
@@ -58,6 +60,7 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y fakeroot
       - name: Build launchable JAR from repository files
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           mkdir -p build/classes build/launcher input dist
@@ -66,16 +69,29 @@ jobs:
           if [[ -f icons/SkyLauncher.png ]]; then mkdir -p build/launcher/icons && cp icons/SkyLauncher.png build/launcher/icons/; fi
           jar --create --file input/SkyLauncher.jar --main-class SkyLauncher -C build/launcher .
           java -jar input/SkyLauncher.jar --selftest
-      - name: Build native offline installer with Java bundled
+      - name: Install Inno Setup for Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
+          if (!(Test-Path $compiler)) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Inno Setup could not be installed.' }
+          }
+          if (!(Test-Path $compiler)) { throw 'Inno Setup could not be found.' }
+      - name: Build and verify Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./build-windows-full-offline.ps1 -TestInstaller
+      - name: Build native macOS and Linux packages with bundled Java
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           icon_arg=()
           if [[ -f 'icons/SkyLauncher.${{ matrix.icon }}' ]]; then icon_arg=(--icon 'icons/SkyLauncher.${{ matrix.icon }}'); fi
-          os_arg=()
-          if [[ '${{ runner.os }}' == 'Windows' ]]; then os_arg=(--win-shortcut --win-menu); fi
-          jpackage --type '${{ matrix.package }}' --name '${{ matrix.name }}' --app-version 3.1.1 \
+          jpackage --type '${{ matrix.package }}' --name '${{ matrix.name }}' --app-version 3.1.2 \
             --input input --main-jar SkyLauncher.jar --main-class SkyLauncher \
-            --dest dist --vendor SkyLauncher "${icon_arg[@]}" "${os_arg[@]}" \
+            --dest dist --vendor SkyLauncher "${icon_arg[@]}" \
             --description 'SkyLauncher native installer - application and Java bundled locally'
       - name: Identify macOS installer architecture in filename
         if: runner.os == 'macOS'
@@ -163,6 +179,24 @@ jobs:
         run: |
           cp installers/macOS/SkyLauncher-Universal-macOS-Installer.zip release-assets/
           cp installers/linux/SkyLauncher-Universal-Linux-Installer.zip release-assets/
+      - name: Check published installer files
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          assets = Path('release-assets')
+          names = {p.name for p in assets.iterdir()}
+          expected = {'SkyLauncher-3.1.2.exe', 'SkyLauncher-Universal-macOS-Installer.zip',
+                      'SkyLauncher-Universal-Linux-Installer.zip', 'SkyLauncher.jar'}
+          if not expected.issubset(names): raise SystemExit(f'Missing release assets: {expected - names}')
+          for name in ['SkyLauncher-Universal-macOS-Installer.zip', 'SkyLauncher-Universal-Linux-Installer.zip']:
+              with ZipFile(assets / name) as z:
+                  script = next(p for p in z.namelist() if p.endswith(('.sh', '.command')))
+                  code = z.read(script).decode('utf-8')
+                  if 'n|N|no|NO|No) return 1' not in code:
+                      raise SystemExit(f'Universal installer does not default to Yes: {name}')
+          PY
       - name: Publish installers and JAR to GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
@@ -170,5 +204,14 @@ jobs:
           TAG: ${{ github.ref_name }}
         shell: bash
         run: |
-          if ! gh release view "$TAG" >/dev/null 2>&1; then gh release create "$TAG" --title "SkyLauncher $TAG" --generate-notes; fi
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "SkyLauncher 3.1.2" --notes "SkyLauncher 3.1.2 improves installing SkyLauncher on Windows, macOS, and Linux.
+
+The Windows installer now offers a desktop shortcut and an option to open SkyLauncher when installation finishes. Both are selected by default.
+The universal Mac and Linux installers also offer a shortcut and opening the app, defaulting to Yes.
+
+Java is included in the main installers. Existing Minecraft worlds, mods, and settings are preserved.
+
+If an older Windows version is still listed separately in Installed apps, you can uninstall that older version."
+          fi
           gh release upload "$TAG" release-assets/* --clobber

@@ -28,7 +28,7 @@ import javax.swing.table.*;
 import javax.imageio.ImageIO;
 
 public class SkyLauncher {
-    static final String VERSION = "3.1.1-java";
+    static final String VERSION = "3.1.2-java";
     static final Path HOME = Paths.get(System.getProperty("user.home"));
     static final Path BASE = HOME.resolve(".ghmodlauncher");
     static final Path CONFIG = BASE.resolve("config.json");

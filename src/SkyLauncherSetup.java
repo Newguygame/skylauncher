@@ -189,7 +189,7 @@ public final class SkyLauncherSetup {
     void bundledInstall() {
         work("Installing bundled SkyLauncher...", () -> {
             Path j = embeddedJar();
-            try { installFrom(j, "bundled-3.1.0-java"); }
+            try { installFrom(j, "bundled-3.1.2-java"); }
             finally { Files.deleteIfExists(j); }
             message("Bundled SkyLauncher installed. Use Download latest later to update from GitHub.");
             if (!Files.exists(APP_DIR.resolve("shortcut-asked.txt"))) onEDT(this::askShortcut);
@@ -354,7 +354,7 @@ public final class SkyLauncherSetup {
     public static void main(String[] args) throws Exception {
         if (args.length > 0 && args[0].equals("--selftest")) { test(); return; }
         if (args.length > 0 && args[0].equals("--install-bundled")) {
-            Path b = embeddedJar(); try { installFrom(b, "bundled-3.1.0-java"); } finally { Files.deleteIfExists(b); }
+            Path b = embeddedJar(); try { installFrom(b, "bundled-3.1.2-java"); } finally { Files.deleteIfExists(b); }
             System.out.println("Bundled launcher installed: " + INSTALLED); return;
         }
         if (args.length > 0 && args[0].equals("--create-shortcut")) {

@@ -1,0 +1,118 @@
+name: Prepare SkyLauncher 3.1.2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/prepare-3.1.2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  prepare:
+    name: Update universal installers and start release build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Update Mac and Linux installer ZIPs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import subprocess
+          import tempfile
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+
+          mac = Path('installers/macOS/SkyLauncher-Universal-macOS-Installer.zip')
+          linux = Path('installers/linux/SkyLauncher-Universal-Linux-Installer.zip')
+          old = 'case "$reply" in y|Y|yes|YES|Yes) return 0 ;; *) return 1 ;; esac'
+          new = 'case "$reply" in n|N|no|NO|No) return 1 ;; *) return 0 ;; esac'
+          readmes = {
+              mac: """SkyLauncher for Mac
+
+1. Unzip this download.
+2. Double-click Install-SkyLauncher-Mac.command.
+3. Follow the instructions.
+
+The installer picks the right version for your Mac.
+It asks about a desktop shortcut and opening SkyLauncher.
+Press Enter for Yes, or type n for No.
+
+Internet is required. Your Minecraft files are kept.
+""",
+              linux: """SkyLauncher for Linux
+
+1. Unzip this download.
+2. Open a terminal in the folder.
+3. Run: bash Install-SkyLauncher-Linux.sh
+4. Follow the instructions.
+
+The installer picks the correct version for your computer.
+It asks about a desktop shortcut and opening SkyLauncher.
+Press Enter for Yes, or type n for No.
+
+Internet is required. Your Minecraft files are kept.
+""",
+          }
+          for path in [mac, linux]:
+              with ZipFile(path) as source:
+                  entries = [(info, source.read(info.filename)) for info in source.infolist()]
+              fd, temp = tempfile.mkstemp(suffix='.zip', dir=path.parent)
+              os.close(fd)
+              scripts = 0
+              try:
+                  with ZipFile(temp, 'w') as target:
+                      for info, raw in entries:
+                          if info.filename.endswith(('.sh', '.command')):
+                              script = raw.decode('utf-8')
+                              if script.count(old) != 1:
+                                  raise SystemExit(f'Installer Yes/No code not found: {path}')
+                              script = script.replace(old, new)
+                              if path == linux:
+                                  before = 'bash "$WORK/package/install.sh" "$desktop" || fail'
+                                  after = 'bash "$WORK/package/install.sh" "$desktop" --no-launch || fail'
+                                  if script.count(before) != 1: raise SystemExit('Linux installer command not found')
+                                  script = script.replace(before, after)
+                              subprocess.run(['bash', '-n'], input=script, text=True, check=True)
+                              raw = script.encode('utf-8')
+                              scripts += 1
+                          elif info.filename == 'README.txt':
+                              raw = readmes[path].encode('utf-8')
+                          target.writestr(info, raw, compress_type=ZIP_DEFLATED)
+                  if scripts != 1: raise SystemExit(f'Expected exactly one installer script: {path}')
+                  os.replace(temp, path)
+              finally:
+                  if os.path.exists(temp): os.unlink(temp)
+              with ZipFile(path) as updated:
+                  assert updated.testzip() is None
+              print('Installer ZIP updated:', path, path.stat().st_size)
+          PY
+      - name: Commit updated installer ZIPs to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add installers/macOS/SkyLauncher-Universal-macOS-Installer.zip installers/linux/SkyLauncher-Universal-Linux-Installer.zip
+          git commit -m "Enable Mac and Linux installer shortcut and launch defaults"
+          git push origin HEAD:main
+      - name: Tag v3.1.2 and start the verified release build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin refs/tags/v3.1.2 >/dev/null 2>&1; then
+            echo 'v3.1.2 already exists. Refusing to overwrite the version.' >&2
+            exit 1
+          fi
+          git tag -a v3.1.2 -m 'SkyLauncher 3.1.2'
+          git push origin v3.1.2
+          gh workflow run build.yml --repo "$GH_REPO" --ref v3.1.2

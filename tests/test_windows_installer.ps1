@@ -1,15 +1,15 @@
-param([string]$SetupPath = 'dist\SkyLauncher-3.1.1-TEST.exe')
+param([string]$SetupPath = 'dist\SkyLauncher-3.1.2.exe')
 
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
 $setup = (Resolve-Path $SetupPath).Path
-$destination = Join-Path $env:LOCALAPPDATA 'Programs\SkyLauncher-TEST'
+$destination = Join-Path $env:LOCALAPPDATA 'Programs\SkyLauncher'
 $log = Join-Path $env:TEMP ('SkyLauncher-Install-' + [guid]::NewGuid().ToString('N') + '.log')
 $desktop = [Environment]::GetFolderPath('DesktopDirectory')
-$shortcut = Join-Path $desktop 'SkyLauncher TEST.lnk'
+$shortcut = Join-Path $desktop 'SkyLauncher.lnk'
 $hadShortcut = Test-Path $shortcut
-if ($hadShortcut) { throw 'An existing SkyLauncher TEST desktop shortcut was found. Use a clean Windows account.' }
+if ($hadShortcut) { throw 'An existing SkyLauncher desktop shortcut was found. Use a clean Windows account.' }
 
 try {
   $installerArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS=desktopicon', "/LOG=`"$log`"")

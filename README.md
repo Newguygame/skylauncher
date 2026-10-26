@@ -8,7 +8,7 @@ SkyLauncher helps you play Minecraft with different game versions and mods. It w
 
 1. Open the [SkyLauncher downloads page](https://github.com/Newguygame/skylauncher/releases).
 2. Download the Windows `.exe` file.
-3. Open it and follow the steps on screen.
+3. Open it and follow the steps on screen. You can choose a desktop shortcut and whether to open SkyLauncher when installation finishes.
 
 **Mac**
 

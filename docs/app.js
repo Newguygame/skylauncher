@@ -39,7 +39,7 @@
       return safe.filter(a => a.name === universal[os]);
     }
     if (os === 'windows') {
-      // SkyLauncher-3.1.1.exe is a complete jpackage Windows setup installer.
+      // Versioned SkyLauncher Windows EXE files are complete installers.
       return safe.filter(a => {
         const name = a.name.toLowerCase();
         return /^skylauncher(?:[-_.].*)?\.exe$/.test(name) &&

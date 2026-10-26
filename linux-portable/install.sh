@@ -7,12 +7,18 @@ DEST="$DATA_HOME/skylauncher"
 APP_MENU="$DATA_HOME/applications/skylauncher.desktop"
 
 want_desktop=ask
+want_launch=ask
 for arg in "$@"; do
   case "$arg" in
     --desktop) want_desktop=yes ;;
     --no-desktop) want_desktop=no ;;
-    --yes) : ;; # Non-interactive use, does not imply a desktop shortcut.
-    *) printf 'Usage: ./install.sh [--desktop|--no-desktop]\n' >&2; exit 2 ;;
+    --launch) want_launch=yes ;;
+    --no-launch) want_launch=no ;;
+    --yes)
+      if [[ "$want_desktop" == ask ]]; then want_desktop=yes; fi
+      if [[ "$want_launch" == ask ]]; then want_launch=no; fi
+      ;;
+    *) printf 'Usage: ./install.sh [--desktop|--no-desktop] [--launch|--no-launch] [--yes]\n' >&2; exit 2 ;;
   esac
 done
 
@@ -63,8 +69,8 @@ chmod 644 "$APP_MENU"
 printf 'Installed SkyLauncher in %s\nAdded application-menu entry: %s\n' "$DEST" "$APP_MENU"
 
 if [[ "$want_desktop" == ask && -t 0 ]]; then
-  read -r -p 'Also create a desktop shortcut? [y/N] ' answer
-  case "$answer" in y|Y|yes|YES) want_desktop=yes;; *) want_desktop=no;; esac
+  read -r -p 'Create a desktop shortcut? [Y/n] ' answer || answer=''
+  case "$answer" in n|N|no|NO|No) want_desktop=no;; *) want_desktop=yes;; esac
 fi
 if [[ "$want_desktop" == yes ]]; then
   DESKTOP=""
@@ -78,5 +84,13 @@ if [[ "$want_desktop" == yes ]]; then
   else
     printf 'No desktop folder found, so only the application-menu shortcut was created.\n'
   fi
+fi
+if [[ "$want_launch" == ask && -t 0 ]]; then
+  read -r -p 'Launch SkyLauncher now? [Y/n] ' answer || answer=''
+  case "$answer" in n|N|no|NO|No) want_launch=no;; *) want_launch=yes;; esac
+fi
+if [[ "$want_launch" == yes ]]; then
+  nohup "$DEST/run.sh" >/dev/null 2>&1 </dev/null &
+  printf 'Opening SkyLauncher...\n'
 fi
 printf 'Minecraft settings and instances in ~/.ghmodlauncher are untouched.\n'
