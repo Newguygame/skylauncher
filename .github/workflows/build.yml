@@ -152,11 +152,17 @@ jobs:
     needs: [build, linux-portable]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: SkyLauncher-*
           path: release-assets
           merge-multiple: true
+      - name: Include the universal Mac and Linux installers
+        shell: bash
+        run: |
+          cp installers/macOS/SkyLauncher-Universal-macOS-Installer.zip release-assets/
+          cp installers/linux/SkyLauncher-Universal-Linux-Installer.zip release-assets/
       - name: Publish installers and JAR to GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
