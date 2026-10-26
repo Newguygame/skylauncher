@@ -26,3 +26,20 @@ Download **SkyLauncher-Windows-Local-Setup.exe** from this delivery. Double-clic
 No icon artwork is included. Optional files: `icons/SkyLauncher.ico` (Windows), `icons/SkyLauncher.icns` (macOS), `icons/SkyLauncher.png` (Java/Linux), and `docs/icon.png` (website). Add files later and rebuild. There is no need to add blank image files.
 
 CurseForge integration is not included yet. Keep Minecraft instances in the existing `~/.ghmodlauncher` folder; launcher updates should not erase it.
+
+## Portable Linux (CachyOS / Arch / Fedora / Ubuntu)
+
+The installer GitHub workflow now also creates portable `.tar.gz` downloads.
+Download the `x86_64` version for most PCs (Java included), or `arm64` for Linux
+ARM systems. Unpack to a new folder and run:
+
+```bash
+./run.sh         # Run without installing
+./install.sh     # Optional: add to application menu and ask for a desktop shortcut
+```
+
+The archive files are at their root, not inside an extra folder. The optional
+installation is per-user, requires no sudo, and reuses `~/.ghmodlauncher`.
+If the bundled Java cannot start, use the `Java-Required.tar.gz` variant with
+Java 17+ from your distribution. The installed launcher may still check GitHub
+for updates as before; **the portable installation itself does not download**.

@@ -11,7 +11,7 @@
   const formats = {
     windows: [ {ext: '.exe', label: 'Windows installer (.exe)'}, {ext: '.msi', label: 'Windows installer (.msi)'}, {ext: '.msix', label: 'Windows installer (.msix)'} ],
     macos:   [ {ext: '.dmg', label: 'macOS installer (.dmg)'}, {ext: '.pkg', label: 'macOS installer (.pkg)'} ],
-    linux:   [ {ext: '.deb', label: 'Linux installer (.deb)'}, {ext: '.appimage', label: 'Linux AppImage'}, {ext: '.rpm', label: 'Linux package (.rpm)'} ],
+    linux:   [ {ext: '.tar.gz', label: 'Portable Linux (.tar.gz)'}, {ext: '.deb', label: 'Linux installer (.deb)'}, {ext: '.appimage', label: 'Linux AppImage'}, {ext: '.rpm', label: 'Linux package (.rpm)'} ],
   };
 
   function detectOS() {
@@ -41,7 +41,8 @@
     const name = asset.name.toLowerCase();
     // Reject other products, Java sources, dev tools, and obvious mismatches.
     if (!name.includes('skylauncher')) return -999;
-    if (/source|debug|symbols|portable|src|javadoc/.test(name)) return -999;
+    if (/source|debug|symbols|src|javadoc/.test(name)) return -999;
+    if (os !== 'linux' && /portable/.test(name)) return -999;
     if (os !== 'windows' && /windows|win32|win64|win-x/.test(name)) return -999;
     if (os !== 'macos' && /macos|mac-os|darwin|osx/.test(name)) return -999;
     if (os !== 'linux' && /linux|ubuntu|debian|appimage/.test(name)) return -999;
@@ -57,11 +58,13 @@
       if (/universal/.test(name)) score += 15;
       if (name.endsWith('.pkg')) score += 15;
     } else {
+      if (name.endsWith('.tar.gz')) score += 70;
       if (name.endsWith('.deb')) score += 30;
       if (name.endsWith('.appimage')) score += 22;
       if (name.endsWith('.rpm')) score += 12;
       if (/amd64|x86[_-]?64/.test(name)) score += 12;
-      if (/arm64|aarch64|i386/.test(name)) score -= 22;
+      if (/arm64|aarch64|i386/.test(name)) score -= 35;
+      if (/java-required/.test(name)) score -= 25;
     }
     return score;
   }
@@ -79,7 +82,9 @@
     button.removeAttribute('aria-disabled');
     button.removeAttribute('tabindex');
     button.href = link(asset);
-    button.textContent = 'Download ' + matchesFormat(asset.name, os).ext.toUpperCase().replace('.', '') + ' ↓';
+    button.textContent = os === 'linux' && asset.name.toLowerCase().endsWith('.tar.gz')
+      ? 'Download portable Linux ↓'
+      : 'Download ' + matchesFormat(asset.name, os).ext.toUpperCase().replace('.', '') + ' ↓';
     button.title = asset.name;
     alternatives.replaceChildren();
   }

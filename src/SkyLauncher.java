@@ -2196,6 +2196,15 @@ public class SkyLauncher {
                 + "\"fullscreen\": false, \"memory_mb\": \"4096\", \"future_key\": {\"x\": [1, 2.5, null, true, \"u\\u00e9\\n\"]}}}, \"theme_bg\": \"#16181f\", \"account\": null}";
         Map<String, Object> c = m(Json.parse(sample)); String out = Json.write(c); Map<String, Object> back = m(Json.parse(out));
         check(back.equals(c), "JSON round-trip"); check(out.contains("theme_bg") && out.contains("future_key"), "unknown keys preserved");
+        // The original Python launcher stores its data under ~/.ghmodlauncher on every OS.
+        // This is a regression check: changing the app's installation directory must not
+        // move profiles, mods, the Minecraft runtime or account/config data.
+        check(BASE.equals(HOME.resolve(".ghmodlauncher")) && CONFIG.equals(BASE.resolve("config.json")),
+                "Python-compatible data folder");
+        check(s(defaultInstance("Test", "1.21.1", "neoforge").get("mods_dir"))
+                .equals(BASE.resolve("instances").resolve("Test").resolve(".minecraft").resolve("mods").toString()),
+                "Python-compatible instance folder");
+
         check(s(m(m(c.get("instances")).get("Fathom Studios")).get("loader")).equals("neoforge"), "reads Python-written config");
         check(mvnPath("net.fabricmc:fabric-loader:0.15.0").equals("net/fabricmc/fabric-loader/0.15.0/fabric-loader-0.15.0.jar"), "maven path");
         check(vcmp("21.1.10", "21.1.9") > 0, "version compare"); check(shlex("-Xss1M \"a b\" c").equals(List.of("-Xss1M", "a b", "c")), "shlex");

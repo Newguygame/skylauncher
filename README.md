@@ -63,3 +63,30 @@ These existing values are **preserved**, not deleted when the simplified tab is 
 Appearance choices are saved in `~/.ghmodlauncher/config.json` and remembered between runs.
 The color chooser is built into Java Swing; no plugins or other apps are needed.
 
+
+## Portable Linux installer (including CachyOS / Arch)
+
+In addition to the `.deb` package, `.github/workflows/build.yml` builds these
+portable GitHub Release assets after the compatibility tests pass:
+
+- `SkyLauncher-Linux-Portable-x86_64.tar.gz`: Linux x64, includes Java 21
+- `SkyLauncher-Linux-Portable-arm64.tar.gz`: Linux ARM64, includes Java 21
+- `SkyLauncher-Linux-Portable-Java-Required.tar.gz`: Java 17+ required; can
+  also be used if the bundled runtime is incompatible with the distribution
+
+The archives have files **at the archive root** (no enclosing directory). Users
+should extract one into a new folder, run `./run.sh`, or run `./install.sh` to
+add a menu entry and optionally create a desktop shortcut. Installation does
+not use sudo, change the OS, download anything, or touch `~/.ghmodlauncher`.
+
+The x64 bundle is built on Ubuntu 22.04 for wider glibc compatibility; the ARM64
+bundle is built on Ubuntu 24.04 ARM. Systems using musl rather than glibc
+(Alpine) should use the Java-required archive and their own compatible Java.
+
+Run the package tests locally with:
+
+```bash
+bash tests/ci-build.sh
+bash linux-portable/package.sh build/SkyLauncher-ci.jar dist --bundle-java
+bash tests/test_linux_portable.sh dist/SkyLauncher-Linux-Portable-x86_64.tar.gz
+```

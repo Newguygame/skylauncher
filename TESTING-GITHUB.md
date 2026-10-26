@@ -36,3 +36,39 @@ node tests/test_logic.js
 ```
 
 Place optional icons in `icons/` and `docs/` as described in their READMEs. No icon artwork is included.
+
+## Existing Python launcher data
+
+The Java and Python launchers both use the current user's home folder:
+
+- Windows: `%USERPROFILE%\.ghmodlauncher\config.json`
+- macOS / Linux: `~/.ghmodlauncher/config.json`
+- Instances: `.ghmodlauncher/instances/<profile>/.minecraft/`
+- Minecraft runtime: `.ghmodlauncher/runtime/` (unless customized in settings)
+
+The automated self-tests verify the default Java folder and configuration compatibility
+using synthetic data, without reading or editing your local SkyLauncher account or mods.
+GitHub Actions runs on disposable hosted computers, not on your Windows PC.
+Before first using the new Java edition, back up your existing `.ghmodlauncher` folder.
+Don't upload that personal folder to GitHub: `config.json` can contain login tokens.
+
+The very old Python v1 location `~/.ghmodlauncher.json` is a *legacy* migration
+source for the Python app, not the current shared location. If you still have only
+that file, open your current Python SkyLauncher once so it migrates to `config.json`.
+
+## Test the portable Linux builds
+
+Open **Actions → Build SkyLauncher native offline installers → Run workflow**.
+After cross-platform verification succeeds, two more jobs appear:
+
+- **Portable Linux (x86_64)** — bundles Java on Ubuntu 22.04, and creates a
+  smaller fallback archive that uses system Java.
+- **Portable Linux (arm64)** — bundles Java on Ubuntu 24.04 ARM.
+
+Each job tests extraction, Java launch (`--selftest`), a user install, desktop
+entry creation and uninstall. Once they pass, get the `.tar.gz` artifacts from
+that workflow run. On a pushed `v*` tag they are attached to GitHub Releases
+alongside the Windows/macOS installers and Ubuntu `.deb`.
+
+The website's Linux card now recognizes `.tar.gz` packages. The tests do not
+verify Minecraft gameplay on CachyOS or every Linux graphics stack.

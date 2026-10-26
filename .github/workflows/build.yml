@@ -10,6 +10,8 @@ on:
       - 'build-local.sh'
       - 'build-windows-full-offline.ps1'
       - '.github/workflows/build.yml'
+      - 'linux-portable/**'
+      - 'tests/test_linux_portable.sh'
       - 'README.md'
 permissions:
   contents: write
@@ -79,9 +81,53 @@ jobs:
         with:
           name: SkyLauncher-Portable-JAR
           path: input/SkyLauncher.jar
+  linux-portable:
+    name: Portable Linux (${{ matrix.arch }})
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # An older glibc on x64 improves compatibility with many Linux distributions.
+          - os: ubuntu-22.04
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Compile and verify Java launcher
+        shell: bash
+        run: |
+          mkdir -p build/portable/classes
+          javac --release 17 -encoding UTF-8 -d build/portable/classes src/SkyLauncher.java
+          jar --create --file build/SkyLauncher.jar --main-class SkyLauncher -C build/portable/classes .
+          java -jar build/SkyLauncher.jar --selftest
+      - name: Package Linux portable archive (includes Java)
+        shell: bash
+        run: bash linux-portable/package.sh build/SkyLauncher.jar dist --bundle-java --arch '${{ matrix.arch }}'
+      - name: Make Java-required portable archive (x64 job only)
+        if: matrix.arch == 'x86_64'
+        shell: bash
+        run: bash linux-portable/package.sh build/SkyLauncher.jar dist
+      - name: Verify extract, launch, install, and uninstall
+        shell: bash
+        run: |
+          for package in dist/*.tar.gz; do
+            bash tests/test_linux_portable.sh "$package"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SkyLauncher-Portable-Linux-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, linux-portable]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
