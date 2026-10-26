@@ -6,9 +6,12 @@ HTML='http://127.0.0.1:8765/index.html'
 MOCK={
  'tag_name':'v3.2.1',
  'assets':[
-  {'name':'SkyLauncherSetup-3.2.1.exe','browser_download_url':'https://github.com/Newguygame/skylauncher/releases/download/v3.2.1/SkyLauncherSetup-3.2.1.exe'},
-  {'name':'SkyLauncherSetup-3.2.1.dmg','browser_download_url':'https://github.com/Newguygame/skylauncher/releases/download/v3.2.1/SkyLauncherSetup-3.2.1.dmg'},
+  {'name':'SkyLauncher-3.2.1.exe','browser_download_url':'https://github.com/Newguygame/skylauncher/releases/download/v3.2.1/SkyLauncher-3.2.1.exe'},
+  {'name':'SkyLauncher-3.2.1-intel.dmg','browser_download_url':'https://github.com/Newguygame/skylauncher/releases/download/v3.2.1/SkyLauncher-3.2.1-intel.dmg'},
+  {'name':'SkyLauncher-3.2.1-arm64.dmg','browser_download_url':'https://github.com/Newguygame/skylauncher/releases/download/v3.2.1/SkyLauncher-3.2.1-arm64.dmg'},
   {'name':'skylauncher-setup_3.2.1_amd64.deb','browser_download_url':'https://github.com/Newguygame/skylauncher/releases/download/v3.2.1/skylauncher-setup_3.2.1_amd64.deb'},
+  {'name':'SkyLauncher-Universal-macOS-Installer.zip','browser_download_url':'https://github.com/Newguygame/skylauncher/releases/download/v3.2.1/SkyLauncher-Universal-macOS-Installer.zip'},
+  {'name':'SkyLauncher-Universal-Linux-Installer.zip','browser_download_url':'https://github.com/Newguygame/skylauncher/releases/download/v3.2.1/SkyLauncher-Universal-Linux-Installer.zip'},
   {'name':'SkyLauncher.jar','browser_download_url':'https://github.com/Newguygame/skylauncher/releases/download/v3.2.1/SkyLauncher.jar'},
  ]
 }
@@ -21,7 +24,7 @@ with sync_playwright() as p:
   page.route('https://api.github.com/repos/Newguygame/skylauncher/releases/latest',lambda route: route.fulfill(json=MOCK,status=200,headers={'access-control-allow-origin':'*'}))
   page.goto(HTML,wait_until='load')
   page.wait_for_function("document.querySelector('#release-pill').textContent.includes('v3.2.1')")
-  for os,extension in [('windows','.exe'),('macos','.dmg'),('linux','.deb')]:
+  for os,extension in [('windows','SkyLauncher-3.2.1.exe'),('macos','SkyLauncher-Universal-macOS-Installer.zip'),('linux','SkyLauncher-Universal-Linux-Installer.zip')]:
    href=page.locator(f'[data-download="{os}"]').get_attribute('href')
    assert href.endswith(extension),(os,href)
   assert page.locator('#portable-link').get_attribute('href').endswith('.jar')

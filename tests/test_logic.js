@@ -12,9 +12,12 @@ const selector=(s)=>el[s]||(el[s]=new Element());
 const document={querySelector:selector,createElement:()=>new Element()};
 const pref='https://github.com/Newguygame/skylauncher/releases/download/v3.2.1/';
 const release={tag_name:'v3.2.1',assets:[
- {name:'SkyLauncherSetup-3.2.1.exe',browser_download_url:pref+'SkyLauncherSetup-3.2.1.exe'},
- {name:'SkyLauncherSetup-3.2.1.dmg',browser_download_url:pref+'SkyLauncherSetup-3.2.1.dmg'},
+ {name:'SkyLauncher-3.2.1.exe',browser_download_url:pref+'SkyLauncher-3.2.1.exe'},
+ {name:'SkyLauncher-3.2.1-intel.dmg',browser_download_url:pref+'SkyLauncher-3.2.1-intel.dmg'},
+ {name:'SkyLauncher-3.2.1-arm64.dmg',browser_download_url:pref+'SkyLauncher-3.2.1-arm64.dmg'},
  {name:'skylauncher-setup_3.2.1_amd64.deb',browser_download_url:pref+'skylauncher-setup_3.2.1_amd64.deb'},
+ {name:'SkyLauncher-Universal-macOS-Installer.zip',browser_download_url:pref+'SkyLauncher-Universal-macOS-Installer.zip'},
+ {name:'SkyLauncher-Universal-Linux-Installer.zip',browser_download_url:pref+'SkyLauncher-Universal-Linux-Installer.zip'},
  {name:'SkyLauncher-Linux-Portable-x86_64.tar.gz',browser_download_url:pref+'SkyLauncher-Linux-Portable-x86_64.tar.gz'},
  {name:'SkyLauncher-Linux-Portable-arm64.tar.gz',browser_download_url:pref+'SkyLauncher-Linux-Portable-arm64.tar.gz'},
  {name:'SkyLauncher-Linux-Portable-Java-Required.tar.gz',browser_download_url:pref+'SkyLauncher-Linux-Portable-Java-Required.tar.gz'},
@@ -33,7 +36,9 @@ async function test(data,expected){
  return selector('#release-pill').textContent;
 }
 (async()=>{
- console.log(await test(release,{windows:'.exe',macos:'.dmg',linux:'-x86_64.tar.gz'}));
+ console.log(await test(release,{windows:'SkyLauncher-3.2.1.exe',macos:'SkyLauncher-Universal-macOS-Installer.zip',linux:'SkyLauncher-Universal-Linux-Installer.zip'}));
+ const nativeOnly={tag_name:'v3.2.1',assets:release.assets.filter(a=>!a.name.includes('Universal'))};
+ console.log(await test(nativeOnly,{windows:'.exe',macos:null,linux:null}));
  console.log(await test({tag_name:'v3.3.0',assets:[]},{windows:null,macos:null,linux:null}));
  console.log('JS release filtering tests passed');
 })().catch(e=>{console.error(e);process.exit(1)});

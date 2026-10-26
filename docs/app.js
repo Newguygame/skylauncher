@@ -8,10 +8,10 @@
   const $ = selector => document.querySelector(selector);
   const link = asset => asset.browser_download_url;
 
-  const formats = {
-    windows: [ {ext: '.exe', label: 'Windows installer (.exe)'}, {ext: '.msi', label: 'Windows installer (.msi)'}, {ext: '.msix', label: 'Windows installer (.msix)'} ],
-    macos:   [ {ext: '.dmg', label: 'macOS installer (.dmg)'}, {ext: '.pkg', label: 'macOS installer (.pkg)'} ],
-    linux:   [ {ext: '.tar.gz', label: 'Portable Linux (.tar.gz)'}, {ext: '.deb', label: 'Linux installer (.deb)'}, {ext: '.appimage', label: 'Linux AppImage'}, {ext: '.rpm', label: 'Linux package (.rpm)'} ],
+  // The main buttons always download installers, not manual application packages.
+  const universal = {
+    macos: 'SkyLauncher-Universal-macOS-Installer.zip',
+    linux: 'SkyLauncher-Universal-Linux-Installer.zip',
   };
 
   function detectOS() {
@@ -32,47 +32,26 @@
     } catch { return false; }
   }
 
-  function matchesFormat(name, os) {
-    const lower = name.toLowerCase();
-    return formats[os].find(f => lower.endsWith(f.ext));
-  }
-
-  function scoreAsset(asset, os) {
-    const name = asset.name.toLowerCase();
-    // Reject other products, Java sources, dev tools, and obvious mismatches.
-    if (!name.includes('skylauncher')) return -999;
-    if (/source|debug|symbols|src|javadoc/.test(name)) return -999;
-    if (os !== 'linux' && /portable/.test(name)) return -999;
-    if (os !== 'windows' && /windows|win32|win64|win-x/.test(name)) return -999;
-    if (os !== 'macos' && /macos|mac-os|darwin|osx/.test(name)) return -999;
-    if (os !== 'linux' && /linux|ubuntu|debian|appimage/.test(name)) return -999;
-    let score = 0;
-    if (/setup|installer|install/.test(name)) score += 30;
-    if (os === 'windows') {
-      if (name.endsWith('.exe')) score += 30;
-      if (name.endsWith('.msi')) score += 18;
-      if (/windows|win64|win-x64/.test(name)) score += 10;
-      if (/arm64|aarch64|x86(?![_-]?64)|i386/.test(name)) score -= 22;
-    } else if (os === 'macos') {
-      if (name.endsWith('.dmg')) score += 30;
-      if (/universal/.test(name)) score += 15;
-      if (name.endsWith('.pkg')) score += 15;
-    } else {
-      if (name.endsWith('.tar.gz')) score += 70;
-      if (name.endsWith('.deb')) score += 30;
-      if (name.endsWith('.appimage')) score += 22;
-      if (name.endsWith('.rpm')) score += 12;
-      if (/amd64|x86[_-]?64/.test(name)) score += 12;
-      if (/arm64|aarch64|i386/.test(name)) score -= 35;
-      if (/java-required/.test(name)) score -= 25;
-    }
-    return score;
-  }
-
   function candidates(assets, os) {
-    return assets.filter(a => a && typeof a.name === 'string' && isSafeAsset(a) && matchesFormat(a.name, os))
-      .map(a => ({asset: a, score: scoreAsset(a, os)})).filter(a => a.score > -999)
-      .sort((a, b) => b.score - a.score).map(({asset}) => asset);
+    const safe = assets.filter(a => a && typeof a.name === 'string' && isSafeAsset(a));
+    if (os === 'macos' || os === 'linux') {
+      // Do not silently substitute a direct DMG, DEB or portable archive.
+      return safe.filter(a => a.name === universal[os]);
+    }
+    if (os === 'windows') {
+      // SkyLauncher-3.1.1.exe is a complete jpackage Windows setup installer.
+      return safe.filter(a => {
+        const name = a.name.toLowerCase();
+        return /^skylauncher(?:[-_.].*)?\.exe$/.test(name) &&
+          (/^skylauncher-\d+\.\d+(?:\.\d+)?\.exe$/.test(name) ||
+           /(?:setup|installer|install)/.test(name)) &&
+          !/(?:debug|source|portable|arm64|aarch64|linux|macos)/.test(name);
+      }).sort((a, b) => {
+        const preference = asset => /^skylauncher-\d+\.\d+(?:\.\d+)?\.exe$/i.test(asset.name) ? 1 : 0;
+        return preference(b) - preference(a);
+      });
+    }
+    return [];
   }
 
   function setButton(os, asset) {
@@ -82,9 +61,11 @@
     button.removeAttribute('aria-disabled');
     button.removeAttribute('tabindex');
     button.href = link(asset);
-    button.textContent = os === 'linux' && asset.name.toLowerCase().endsWith('.tar.gz')
-      ? 'Download portable Linux ↓'
-      : 'Download ' + matchesFormat(asset.name, os).ext.toUpperCase().replace('.', '') + ' ↓';
+    button.textContent = {
+      windows: 'Download Windows installer ↓',
+      macos: 'Download Mac installer (.zip) ↓',
+      linux: 'Download Linux installer (.zip) ↓',
+    }[os];
     button.title = asset.name;
     alternatives.replaceChildren();
   }
@@ -109,24 +90,15 @@
     $('#retry').hidden = true;
     const assets = release.assets;
     let available = 0;
-    for (const os of Object.keys(formats)) {
+    for (const os of ['windows', 'macos', 'linux']) {
       const choices = candidates(assets, os);
       if (choices.length) {
         setButton(os, choices[0]);
         available += 1;
         const alternatives = $(`[data-alternates="${os}"]`);
-        if (choices.length > 1) {
-          const details = document.createElement('details');
-          const summary = document.createElement('summary');
-          summary.textContent = 'Other formats (' + (choices.length - 1) + ')';
-          details.appendChild(summary);
-          for (const asset of choices.slice(1)) {
-            const a = document.createElement('a');
-            a.href = link(asset); a.textContent = asset.name;
-            details.appendChild(a);
-          }
-          alternatives.appendChild(details);
-        } else alternatives.textContent = 'Java included · GitHub hosted';
+        alternatives.textContent = os === 'windows'
+          ? 'Full installer · Java included'
+          : 'Unzip and run the installer · Java included';
       } else setUnavailable(os);
     }
     const jars = assets.filter(a => typeof a.name === 'string' && /^skylauncher(?:[-_.].*)?\.jar$/i.test(a.name) && !/setup|source|debug/.test(a.name.toLowerCase()) && isSafeAsset(a));
@@ -137,16 +109,16 @@
       portable.href = RELEASES; portable.textContent = 'Portable version / releases ↗';
     }
     $('#asset-note').textContent = available
-      ? 'Installer downloads go directly to the files published in GitHub Releases.'
-      : 'This release has no Windows, macOS or Linux installer attached yet. Publish the native installer files to enable downloads.';
+      ? 'After downloading, run the installer. On Mac and Linux, unzip the download first.'
+      : 'Installers are not available in this release yet. See All releases for other downloads.';
   }
 
   function setError(error) {
-    for (const os of Object.keys(formats)) setUnavailable(os);
+    for (const os of ['windows', 'macos', 'linux']) setUnavailable(os);
     $('#release-pill').textContent = 'No installer release available';
     $('#release-dot').className = 'status-dot offline';
     $('#release-status').textContent = 'Could not load a published release from GitHub.';
-    $('#asset-note').textContent = 'No download was found. Publish a GitHub Release with installer assets, or check the releases page.';
+    $('#asset-note').textContent = 'Could not check downloads. Try again or open All releases.';
     $('#retry').hidden = false;
     console.info('SkyLauncher release lookup:', error.message);
   }
