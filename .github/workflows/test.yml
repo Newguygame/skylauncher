@@ -53,7 +53,7 @@ jobs:
         include:
           - name: Fedora
             image: fedora:latest
-            install: dnf -y install java-21-openjdk-devel git tar gzip ca-certificates
+            install: dnf -y install java-25-openjdk-devel git tar gzip ca-certificates
           - name: Arch Linux
             image: archlinux:latest
             install: pacman -Sy --noconfirm --needed jdk21-openjdk git tar gzip ca-certificates
