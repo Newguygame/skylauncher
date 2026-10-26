@@ -197,7 +197,7 @@ SKIP_DEPS = {"minecraft", "java", "forge", "neoforge", "fabricloader", "fabric-l
              "quilt_loader", "quilt_base", "fml", "javafml", "lowcodefml", "mixinextras"}
 
 # Launcher self-update (GitHub releases). Set "update_repo" in config.json or edit below.
-LAUNCHER_VERSION = "1.2.7"
+LAUNCHER_VERSION = "1.2.8"
 DEFAULT_UPDATE_REPO = "Newguygame/skylauncher"
 
 # Built-in pack: Fathom Studios (NeoForge 1.21.1)
@@ -440,47 +440,74 @@ def _version_newer(remote, local):
 
 def fetch_latest_launcher_release(repo, token=""):
     """
-    Return dict: tag, notes, download_url (direct .py or None), html_url
-    or None if no releases / error.
+    Find the newest launcher version. Prefer GitHub Releases when present, but
+    this project also publishes directly to the main branch with no releases.
+    In that case fetch the canonical .pyw filename (not the old .py filename)
+    and read LAUNCHER_VERSION from its source.
     """
     if not repo or repo.count("/") != 1:
         return None
+
+    # First try the conventional GitHub Releases workflow.
     try:
         rel = http(f"{API}/repos/{repo}/releases/latest", token)
     except Exception:
-        return None
-    if rel.get("draft") or not rel.get("tag_name"):
-        return None
-    tag = rel["tag_name"]
-    download_url = None
-    # Prefer a .py asset (exact name or any .py)
-    assets = rel.get("assets") or []
-    py_assets = [a for a in assets if a.get("name", "").endswith(".py")]
-    script_name = os.path.basename(os.path.abspath(sys.argv[0])) if sys.argv else "skylauncher.py"
-    if script_name.lower().endswith(".pyw"):  # run as .pyw (no console), but the repo ships the .py name
-        script_name = script_name[:-1]
-    for a in py_assets:
-        if a.get("name") == script_name:
-            download_url = a.get("browser_download_url") or a.get("url")
-            break
-    if not download_url and py_assets:
-        a = py_assets[0]
-        download_url = a.get("browser_download_url") or a.get("url")
-    # Fallback: raw file from the tag (common single-file layout)
-    if not download_url:
-        # Raw GitHub URLs do not provide a directory listing, so use the canonical
-        # launcher filename first, followed by common alternatives. The download
-        # is validated before it can replace the current script.
-        names = list(dict.fromkeys((script_name, "skylauncher.py", "ghmodlauncher.py", "launcher.py")))
-        download_url = f"https://raw.githubusercontent.com/{repo}/{tag}/{names[0]}"
-    return {
-        "tag": tag,
-        "notes": (rel.get("body") or "")[:500],
-        "download_url": download_url,
-        "html_url": rel.get("html_url") or f"https://github.com/{repo}/releases/tag/{tag}",
-        "asset_api_url": next((a.get("url") for a in py_assets if a.get("name") == script_name),
-                             py_assets[0].get("url") if py_assets else None),
-    }
+        rel = None
+    if rel and not rel.get("draft") and rel.get("tag_name"):
+        tag = rel["tag_name"]
+        assets = rel.get("assets") or []
+        # Prefer the actual current script name, then legacy/alternate names.
+        names = []
+        running_name = os.path.basename(os.path.abspath(sys.argv[0])) if sys.argv else "skylauncher.pyw"
+        names.extend([running_name, "skylauncher.pyw", "skylauncher.py", "ghmodlauncher.py", "launcher.py"])
+        for name in dict.fromkeys(names):
+            asset = next((a for a in assets if a.get("name", "").lower() == name.lower()), None)
+            if asset:
+                return {
+                    "tag": tag,
+                    "notes": (rel.get("body") or "")[:500],
+                    "download_url": asset.get("browser_download_url") or asset.get("url"),
+                    "html_url": rel.get("html_url") or f"https://github.com/{repo}/releases/tag/{tag}",
+                    "asset_api_url": asset.get("url"),
+                }
+        # Release has no launcher asset: use canonical source file at this tag.
+        for name in ("skylauncher.pyw", "skylauncher.py", running_name, "ghmodlauncher.py", "launcher.py"):
+            url = f"https://raw.githubusercontent.com/{repo}/{tag}/{name}"
+            try:
+                source = fetch_bytes(url).decode("utf-8-sig")
+                if "LAUNCHER_VERSION" in source and "SkyLauncher" in source[:3000]:
+                    return {"tag": tag, "notes": (rel.get("body") or "")[:500],
+                            "download_url": url,
+                            "html_url": rel.get("html_url") or f"https://github.com/{repo}/releases/tag/{tag}",
+                            "asset_api_url": None}
+            except Exception:
+                continue
+
+    # No release exists (or release lookup failed): follow the current main branch.
+    # This repository's canonical filename is skylauncher.pyw; the old updater
+    # incorrectly stripped the final 'w' and requested skylauncher.py.
+    branch = "main"
+    candidates = ("skylauncher.pyw", "skylauncher.py", "ghmodlauncher.py", "launcher.py")
+    for name in candidates:
+        url = f"https://raw.githubusercontent.com/{repo}/{branch}/{name}"
+        try:
+            source = fetch_bytes(url).decode("utf-8-sig")
+        except Exception:
+            continue
+        if "LAUNCHER_VERSION" not in source or ("SkyLauncher" not in source[:3000] and "import tkinter" not in source[:10000]):
+            continue
+        match = re.search(r"^LAUNCHER_VERSION\s*=\s*[\'\"]([^\'\"]+)[\'\"]", source, re.M)
+        if not match:
+            continue
+        version = match.group(1)
+        return {
+            "tag": version,
+            "notes": "Updated from the latest source on the GitHub main branch.",
+            "download_url": url,
+            "html_url": f"https://github.com/{repo}/commits/{branch}",
+            "asset_api_url": None,
+        }
+    return None
 
 
 def download_launcher_update(info, token=""):
