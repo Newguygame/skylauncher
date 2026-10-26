@@ -34,31 +34,8 @@ jobs:
           old = 'case "$reply" in y|Y|yes|YES|Yes) return 0 ;; *) return 1 ;; esac'
           new = 'case "$reply" in n|N|no|NO|No) return 1 ;; *) return 0 ;; esac'
           readmes = {
-              mac: """SkyLauncher for Mac
-
-1. Unzip this download.
-2. Double-click Install-SkyLauncher-Mac.command.
-3. Follow the instructions.
-
-The installer picks the right version for your Mac.
-It asks about a desktop shortcut and opening SkyLauncher.
-Press Enter for Yes, or type n for No.
-
-Internet is required. Your Minecraft files are kept.
-""",
-              linux: """SkyLauncher for Linux
-
-1. Unzip this download.
-2. Open a terminal in the folder.
-3. Run: bash Install-SkyLauncher-Linux.sh
-4. Follow the instructions.
-
-The installer picks the correct version for your computer.
-It asks about a desktop shortcut and opening SkyLauncher.
-Press Enter for Yes, or type n for No.
-
-Internet is required. Your Minecraft files are kept.
-""",
+              mac: "SkyLauncher for Mac\n\n1. Unzip this download.\n2. Double-click Install-SkyLauncher-Mac.command.\n3. Follow the instructions.\n\nThe installer picks the right version for your Mac.\nIt asks about a desktop shortcut and opening SkyLauncher.\nPress Enter for Yes, or type n for No.\n\nInternet is required. Your Minecraft files are kept.\n",
+              linux: "SkyLauncher for Linux\n\n1. Unzip this download.\n2. Open a terminal in the folder.\n3. Run: bash Install-SkyLauncher-Linux.sh\n4. Follow the instructions.\n\nThe installer picks the correct version for your computer.\nIt asks about a desktop shortcut and opening SkyLauncher.\nPress Enter for Yes, or type n for No.\n\nInternet is required. Your Minecraft files are kept.\n",
           }
           for path in [mac, linux]:
               with ZipFile(path) as source:
