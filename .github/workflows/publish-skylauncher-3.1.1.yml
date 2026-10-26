@@ -1,0 +1,105 @@
+name: Publish SkyLauncher 3.1.1
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-skylauncher-3.1.1.yml'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    name: Publish tested installer downloads
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download the successful installer build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          conclusion="$(gh run view 40395517530 --json conclusion --jq .conclusion)"
+          if [[ "$conclusion" != success ]]; then
+            echo "Build 40395517530 did not pass." >&2
+            exit 1
+          fi
+          gh run download 40395517530 --repo "$GH_REPO" --pattern 'SkyLauncher-*' --dir build-artifacts
+
+      - name: Collect the installer files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from shutil import copy2
+
+          source = Path('build-artifacts')
+          out = Path('release-assets')
+          out.mkdir()
+          for file in sorted(source.rglob('*')):
+              if not file.is_file() or 'SkyLauncher-Tested-JAR' in file.parts:
+                  continue
+              dest = out / file.name
+              if dest.exists():
+                  if file.name == 'SkyLauncher.jar':
+                      continue
+                  raise RuntimeError(f'Duplicate download filename: {file.name}')
+              copy2(file, dest)
+
+          for platform, filename in (
+              ('macOS', 'SkyLauncher-Universal-macOS-Installer.zip'),
+              ('linux', 'SkyLauncher-Universal-Linux-Installer.zip'),
+          ):
+              copy2(Path('installers') / platform / filename, out / filename)
+
+          names = {p.name for p in out.iterdir()}
+          checks = {
+              'Windows installer': any(n.lower().endswith('.exe') for n in names),
+              'Intel Mac installer': any(n.lower().endswith('-intel.dmg') for n in names),
+              'Apple Silicon Mac installer': any(n.lower().endswith('-arm64.dmg') for n in names),
+              'Linux installer': any(n.lower().endswith('.deb') for n in names),
+              'Linux x86_64 portable': 'SkyLauncher-Linux-Portable-x86_64.tar.gz' in names,
+              'Linux arm64 portable': 'SkyLauncher-Linux-Portable-arm64.tar.gz' in names,
+              'Linux Java-required portable': 'SkyLauncher-Linux-Portable-Java-Required.tar.gz' in names,
+              'Portable Java launcher': 'SkyLauncher.jar' in names,
+              'Universal Mac installer': 'SkyLauncher-Universal-macOS-Installer.zip' in names,
+              'Universal Linux installer': 'SkyLauncher-Universal-Linux-Installer.zip' in names,
+          }
+          for description, found in checks.items():
+              print(f"{'OK' if found else 'MISSING'}: {description}")
+          if not all(checks.values()):
+              raise SystemExit('Cannot publish an incomplete release')
+          print('Ready to publish:')
+          for name in sorted(names):
+              print(' -', name)
+          PY
+
+      - name: Publish SkyLauncher 3.1.1 on GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view v3.1.1 >/dev/null 2>&1; then
+            echo "Release v3.1.1 already exists. Not overwriting it." >&2
+            exit 1
+          fi
+          gh release create v3.1.1 release-assets/* \
+            --target "$GITHUB_SHA" \
+            --title 'SkyLauncher 3.1.1' \
+            --notes 'SkyLauncher for Windows, macOS, and Linux.
+
+          Download the file for your computer. The universal Mac and Linux installers automatically choose the correct version.
+
+          Native Windows and Mac installers and the main Linux downloads include Java. A portable Java file and a Linux download for systems with Java installed are also available.
+
+          Keep a backup of your Minecraft worlds and settings before major changes.
+
+          Windows and macOS may display warnings because these installers are not digitally signed.'
