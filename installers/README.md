@@ -1,43 +1,43 @@
-# SkyLauncher — separate universal installers for macOS and Linux
+# Install SkyLauncher
 
-These are **two different installers**. Both are small bootstrap ZIPs, not Minecraft launcher distributions. They fetch the **latest published GitHub Release** from this repository and automatically install the right SkyLauncher package. Installation proceeds in one script; the user does **not** have to open the downloaded DMG or archive manually.
+Pick the installer for your computer. You only need to run **one** installer. It downloads the right SkyLauncher version and installs it for you.
 
-## Download
+## Mac
 
-- **[Universal macOS Installer ZIP](macOS/SkyLauncher-Universal-macOS-Installer.zip)** — supports Intel x64 and Apple Silicon ARM64 Macs.
-- **[Universal Linux Installer ZIP](linux/SkyLauncher-Universal-Linux-Installer.zip)** — supports x86_64/AMD64 and ARM64/aarch64 Linux.
+[Download the Mac installer](macOS/SkyLauncher-Universal-macOS-Installer.zip).
 
-Download the relevant ZIP from GitHub (open the ZIP file and choose **Download raw file**).
+1. Unzip the download.
+2. Double-click `Install-SkyLauncher-Mac.command`.
+3. Follow the questions on screen.
 
-## macOS
-
-Unzip and double-click `Install-SkyLauncher-Mac.command`. If macOS prevents opening it directly, open Terminal in the extracted directory and run:
+If double-clicking does not work, open Terminal in the same folder and run:
 
 ```bash
 bash Install-SkyLauncher-Mac.command
 ```
 
-The script detects the hardware CPU architecture (including Apple Silicon running a Rosetta terminal), selects the architecture-matched `.dmg` asset from the latest release, downloads and mounts it, copies `SkyLauncher.app` into `~/Applications`, and ejects the DMG. It can offer to make a desktop shortcut and launch the app. No preinstalled Java or sudo required; Apple may require approval for an unsigned/unnotarized app.
+Works with Intel Macs and Apple Silicon Macs.
 
 ## Linux
 
-Unzip and run:
+[Download the Linux installer](linux/SkyLauncher-Universal-Linux-Installer.zip).
 
-```bash
-bash Install-SkyLauncher-Linux.sh
-```
+1. Unzip the download.
+2. Open a terminal in the folder.
+3. Run:
 
-The script detects x86_64 or ARM64, downloads the appropriate `SkyLauncher-Linux-Portable-*.tar.gz` **with Java bundled**, extracts it, invokes the package's `install.sh`, creates an Applications-menu entry under the current user, and optionally makes a desktop shortcut or launches SkyLauncher. No preinstalled Java or sudo required on supported glibc distributions such as Arch/CachyOS, Fedora, Debian and Ubuntu.
+   ```bash
+   bash Install-SkyLauncher-Linux.sh
+   ```
 
-## Requirements and limitations
+Follow the questions on screen. Works on many Linux systems, including CachyOS, Arch, Fedora, and Ubuntu.
 
-- Both installers need `curl` and a working Internet connection, and the **latest release must already contain the corresponding architecture-specific assets**. If those assets do not exist, the installer stops with a clear error; it does not install an older or wrong-architecture version.
-- Linux also needs `tar`; the installers use standard shell and OS utilities.
-- Neither installer updates or deletes the existing Minecraft data at `~/.ghmodlauncher`.
-- The native packages are **not re-uploaded here**; these ZIPs are small installers that download them on demand.
-- Check the latest release without installing: `bash Install-SkyLauncher-Mac.command --check-only` or `bash Install-SkyLauncher-Linux.sh --check-only`.
-- Linux and macOS installers have passed automated architecture-selection and mocked end-to-end installation tests. Real-world macOS installation is not yet tested on a physical Mac.
-- The Windows installer and launcher UI are not affected.
+## Good to know
 
-The bootstrap flow is: **run one ZIP's script → detect OS/CPU → fetch official release asset → install SkyLauncher → optional shortcut / launch**.
+- You need an internet connection to download SkyLauncher.
+- You don't need to install Java separately.
+- You can choose whether to add a desktop shortcut and open SkyLauncher after installation.
+- Your existing Minecraft worlds, mods, and settings are kept.
+- If the newest SkyLauncher release doesn't have a download for your computer, the installer will tell you.
 
+[See all SkyLauncher downloads](https://github.com/Newguygame/skylauncher/releases).

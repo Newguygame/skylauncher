@@ -1,72 +1,44 @@
-# SkyLauncher portable Linux — quick guide
+# SkyLauncher for Linux — run without installing
 
-Use this for **CachyOS, Arch Linux, Fedora, openSUSE, Ubuntu, Mint**, and many
-other Linux desktops. It is **not** a `.deb` or `.rpm` package and does not
-need root or an external installer app.
+If you prefer an automatic setup, use the [Linux installer](installers/linux/SkyLauncher-Universal-Linux-Installer.zip).
 
-## 1. Download the right archive
+You can also download SkyLauncher and run it from a folder.
 
-- `SkyLauncher-Linux-Portable-x86_64.tar.gz` — most desktop PCs, **Java bundled**.
-- `SkyLauncher-Linux-Portable-arm64.tar.gz` — Linux ARM64 computers, **Java bundled**.
-- `SkyLauncher-Linux-Portable-Java-Required.tar.gz` — smaller, requires system
-  Java **17 or newer**; useful on older distributions and Alpine with its
-  native Java package.
+## Download
 
-All files are at the **archive root**, not inside an extra `SkyLauncher` folder.
-Extract them into a new folder to avoid mixing them with other files.
+Open [SkyLauncher downloads](https://github.com/Newguygame/skylauncher/releases) and choose:
 
-## 2. Run directly (no installation)
+- **Linux x86_64** — for most Intel and AMD computers.
+- **Linux arm64** — for ARM-based computers.
 
-Example commands for the x64 package:
+These downloads include Java, so you don't need to install it separately.
 
-```bash
-mkdir -p ~/Applications/SkyLauncher
-# Run these commands from the folder containing the download:
-tar -xzf SkyLauncher-Linux-Portable-x86_64.tar.gz -C ~/Applications/SkyLauncher
-~/Applications/SkyLauncher/run.sh
-```
+If neither version works on your computer, try the download named **Java-Required**. That one needs Java 17 or newer already installed.
 
-You can also open a terminal inside the extracted folder and run `./run.sh`.
+## Start SkyLauncher
 
-## 3. Optional install into the Applications menu
+1. Unpack the `.tar.gz` file into a new folder.
+2. Open a terminal in that folder.
+3. Run:
 
-From the extracted folder:
+   ```bash
+   ./run.sh
+   ```
+
+## Add SkyLauncher to your Applications menu
+
+From the same folder, run:
 
 ```bash
 ./install.sh
 ```
 
-This installs into `~/.local/share/skylauncher/`, adds a menu shortcut, and
-asks whether you also want a desktop shortcut. It does **not** use `sudo`.
+You can choose whether to add a desktop shortcut. You do not need an administrator password.
 
-To remove the installed app later:
+To remove SkyLauncher later, run:
 
 ```bash
 ~/.local/share/skylauncher/uninstall.sh
 ```
 
-Your Minecraft mods, Microsoft login information, and profile data stay in
-`~/.ghmodlauncher/`, shared with the earlier Python edition. They are never
-included in the release tarball or deleted by the portable installer.
-
-## 4. Build on GitHub Actions
-
-Upload the updated project files to the root of
-https://github.com/Newguygame/skylauncher (preserve the `.github` folder), then
-open **Actions → Build SkyLauncher native offline installers → Run workflow**.
-
-After tests pass, download the artifacts named:
-
-- `SkyLauncher-Portable-Linux-x86_64`
-- `SkyLauncher-Portable-Linux-arm64`
-
-Each artifact contains `.tar.gz` archives. Publishing a `v*` tag will also
-attach them to a GitHub Release and your GitHub Pages download website will
-find them automatically.
-
-**Compatibility:** The x64 bundled-Java release is built on Ubuntu 22.04 for
-wider glibc compatibility, while ARM64 is built on Ubuntu 24.04. Linux
-variants with another C library (notably Alpine/musl) need compatible system
-Java. A green CI result does not prove Minecraft gameplay works on every
-Linux distribution. The launcher may connect to GitHub and Minecraft
-services when running, but unpacking and installing the archive are offline.
+Removing the app leaves your Minecraft worlds, mods, and settings in place.
