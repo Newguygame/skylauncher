@@ -79,6 +79,7 @@ jobs:
           node --check docs/app.js
           node --check docs/logo.js
           node tests/test_logic.js
+          python3 tests/test_site_branding.py
 
   linux-gui:
     name: Linux graphical startup smoke test

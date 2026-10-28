@@ -6,10 +6,14 @@
 .features-section{border-top:1px solid #29313d;padding-top:80px;padding-bottom:102px}.features-section h2{margin-bottom:35px}.features-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}.feature{padding:26px;border-radius:14px;background:#131a22;border:1px solid #2c3744}.feature-mark{width:45px;height:45px;display:grid;place-items:center;font-size:25px;color:#9bd3ff;background:#1a334b;border-radius:11px;margin-bottom:18px}.feature h3{font-size:16px;margin-bottom:10px}.feature p{color:#9dacbc;font-size:13px;line-height:1.7;margin:0}.callout{background:linear-gradient(105deg,#172c40,#121b28);border:1px solid #304a66;border-radius:18px;display:flex;align-items:center;justify-content:space-between;gap:25px;padding:35px 40px;margin-bottom:86px}.callout h2{margin-top:14px}.callout p{color:#aebfce;font-size:14px;margin:0}.button-outline{border:1px solid #6ca9de;padding:0 21px;background:#294563;color:#e3f2ff}.button-outline:hover{background:#345d83}.site-footer{border-top:1px solid #29313d;display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:110px;color:#8493a5;font-size:12px}.footer-brand{display:flex;align-items:center;gap:9px;color:#dce6f0;font-weight:750;font-size:14px}.site-footer a{color:#a8d1ff}
 @media(max-width:840px){.platform-grid{gap:12px}.platform-card{padding:23px 17px}.recommend{font-size:9px}.wrap{width:calc(100% - 38px)}.downloads-footer{flex-direction:column;align-items:flex-start}.hero{padding-top:73px}}@media(max-width:650px){.site-header{height:72px}.site-header nav{gap:13px}.site-header nav a:not(.nav-github){display:none}.hero{padding-top:70px;padding-bottom:69px}.hero-icon img{width:117px;height:117px}.hero h1{letter-spacing:-2.5px}.hero-lead{font-size:15px}.hero-actions{flex-direction:column;max-width:290px;margin-inline:auto}.section-header{align-items:start;flex-direction:column}.platform-grid,.features-grid{grid-template-columns:1fr}.platform-card{min-height:272px;padding:24px}.platform-top{min-height:62px}.platform-description{margin-bottom:16px}.downloads-section{padding-bottom:70px}.features-section{padding-top:62px;padding-bottom:70px}.callout{flex-direction:column;align-items:start;padding:25px;margin-bottom:62px}.site-footer{padding:25px 0;flex-wrap:wrap;min-height:0}.site-footer span{order:3;width:100%}}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.button,.platform-card{transition:none}}
 
-/* Reserved blank logo slots — add docs/icon.png to show your own artwork. */
-.custom-logo-slot{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;border:1px dashed #58657580;border-radius:12px;background:#ffffff05;overflow:hidden}
-.custom-logo-slot.has-logo{border:0;background:transparent}
-.custom-logo-slot img:not([hidden]){display:block;width:100%;height:100%;object-fit:contain}
-.logo-small{width:36px;height:36px;border-radius:9px}
-.logo-large{width:142px;height:142px;border-radius:24px}
-.logo-footer{width:28px;height:28px;border-radius:7px}
+/* Fathom Studios branding — use the original vector logo at every screen size. */
+.brand-publisher-logo { width:132px; height:61px; object-fit:contain; flex-shrink:0; }
+.brand-project { font-size:17px; white-space:nowrap; padding-left:14px; border-left:1px solid #ffffff26; }
+.hero-brand-icon { width:142px; height:142px; object-fit:contain; transform:none !important; }
+.footer-brand img { display:block; width:93px; height:43px; object-fit:contain; }
+.footer-brand strong { border-left:1px solid #ffffff24; padding-left:10px; font-size:13px; font-weight:700; }
+@media(max-width:650px) {
+  .brand-publisher-logo { width:104px; height:48px; }
+  .brand-project { display:none; }
+  .site-footer > span { order:3; width:100%; }
+}

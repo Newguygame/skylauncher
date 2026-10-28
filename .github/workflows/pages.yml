@@ -26,11 +26,22 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Generate browser icons and social preview from Fathom Studios SVG
+        run: |
+          python -m pip install --quiet 'cairosvg>=2.7,<3' 'Pillow>=10,<13'
+          python scripts/build_site_branding.py
+          python tests/test_site_branding.py
       - name: Verify website files
         run: |
           test -f docs/index.html
           test -f docs/app.js
           test -f docs/styles.css
+          test -f docs/favicon.ico
+          test -f docs/apple-touch-icon.png
+          test -f docs/fathom-studios-logo.png
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
