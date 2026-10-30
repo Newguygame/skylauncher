@@ -17,3 +17,21 @@
   .brand-project { display:none; }
   .site-footer > span { order:3; width:100%; }
 }
+
+
+/* Keep support accessible in the mobile header, even when other nav links collapse. */
+.site-header nav a.nav-support {
+  display:inline-flex;
+  align-items:center;
+  white-space:nowrap;
+  padding:10px 13px;
+  border-radius:10px;
+  color:#fff;
+  border:1px solid #c28aff7a;
+  background:#9b56e524;
+}
+.site-header nav a.nav-support:hover {background:#9b56e548;}
+@media(max-width:650px) {
+  .site-header nav a.nav-support {display:inline-flex; font-size:12px; padding:9px 10px;}
+  .site-header nav {gap:8px;}
+}
