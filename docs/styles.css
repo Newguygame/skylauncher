@@ -35,3 +35,6 @@
   .site-header nav a.nav-support {display:inline-flex; font-size:12px; padding:9px 10px;}
   .site-header nav {gap:8px;}
 }
+
+/* Mobile: keep support link visible beside the GitHub button. */
+@media(max-width:650px){.site-header nav a.nav-support{display:inline-flex!important;visibility:visible!important;opacity:1!important}.site-header nav{gap:7px}.site-header nav a.nav-github{padding:9px}.site-header .brand{min-width:0}}
