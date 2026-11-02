@@ -35,7 +35,7 @@ import java.security.cert.Certificate;
 
 
 public class SkyLauncher {
-    static final String VERSION = "3.1.6";
+    static final String VERSION = "3.1.7";
     static final Path HOME = Paths.get(System.getProperty("user.home"));
     static final Path BASE = HOME.resolve(".ghmodlauncher");
     static final Path CONFIG = BASE.resolve("config.json");
@@ -932,6 +932,19 @@ public class SkyLauncher {
             log.log("Pack install complete.");
         } finally { Files.deleteIfExists(zip); }
     }
+    static void applyPackVersions(Map<String,Object> inst,String minecraft,String loader,String loaderVersion) {
+        if(minecraft.isBlank() || loader.isBlank()) throw new IllegalArgumentException("Missing modpack version metadata");
+        boolean changed=!minecraft.equals(s(inst.get("mc_version"))) ||
+            !loader.equals(s(inst.get("loader"))) ||
+            !loaderVersion.equals(s(inst.get("loader_version")));
+        inst.put("mc_version",minecraft);
+        inst.put("loader",loader);
+        inst.put("loader_version",loaderVersion);
+        if(changed) {
+            inst.put("version_id","");
+            inst.put("installed_key","");
+        }
+    }
     static void installModrinthPack(Map<String, Object> cfg, String slug, String version, Map<String, Object> inst, boolean clear, Log log) throws Exception {
         Map<String, Object> p = m(mr(cfg, "/project/" + enc(slug)));
         if (!"modpack".equals(s(p.get("project_type")))) throw new IOException("'" + slug + "' on Modrinth is a " + p.get("project_type") + ", not a modpack");
@@ -976,7 +989,7 @@ public class SkyLauncher {
                         try (InputStream in = z.getInputStream(e)) { Files.copy(in, dest, StandardCopyOption.REPLACE_EXISTING); }
                     }
                 }
-                inst.put("mc_version", mc); inst.put("loader", loader); inst.put("loader_version", lver);
+                applyPackVersions(inst, mc, loader, lver);
                 log.log("Pack needs " + loader + " " + lver + " on Minecraft " + mc);
             } finally { Files.deleteIfExists(dl); }
         } finally { Files.deleteIfExists(tmp); }
@@ -1113,7 +1126,7 @@ public class SkyLauncher {
                     Files.copy(src, dest, StandardCopyOption.REPLACE_EXISTING);
                 }
             }
-            inst.put("mc_version", mc); inst.put("loader", loader); inst.put("loader_version", loaderVersion);
+            applyPackVersions(inst, mc, loader, loaderVersion);
             inst.put("pack_source", "curseforge"); inst.put("pack_id", projectId); inst.put("pack_file_id", fileId);
             inst.put("pack_repo", ""); inst.put("pack_ref", ""); inst.put("pack_sha", ""); inst.put("pack_skip_sha", "");
             inst.put("pack_name", name); inst.put("pack_version", s(file.get("name")));
@@ -1139,6 +1152,8 @@ public class SkyLauncher {
     transient Image[] bundledBackgrounds; int selectedBackgroundIndex = 0;
     JPanel backgroundRoot, screenRoot; JTabbedPane mainTabs; CardLayout screenLayout;
     JComboBox<String> visualInstanceBox; JLabel visualProfileLabel;
+    final List<JButton> profileAwareButtons = new ArrayList<>();
+    JLabel notificationLabel; javax.swing.Timer notificationTimer;
     boolean terminalStyleActive = false;
     static volatile boolean VISUAL_GLASS = true;
 
@@ -1181,6 +1196,46 @@ public class SkyLauncher {
         SwingUtilities.invokeLater(() -> new SkyLauncher().build());
     }
 
+    static String conciseNotice(String message) {
+        if (message == null) return "";
+        String clean = message.replaceAll("[\\r\\n\\t]+", " ").trim();
+        return clean.length() > 105 ? "Details are available in Tools & Logs." : clean;
+    }
+    void notifyUser(String message) {
+        log(message);
+        SwingUtilities.invokeLater(() -> {
+            if (frame == null || !frame.isShowing()) return;
+            JLayeredPane layer = frame.getLayeredPane();
+            if (notificationLabel == null) {
+                notificationLabel = new JLabel("", SwingConstants.CENTER) {
+                    @Override protected void paintComponent(Graphics g) {
+                        Graphics2D gg = (Graphics2D) g.create();
+                        gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                        gg.setColor(new Color(15,25,44,235));
+                        gg.fillRoundRect(0,0,getWidth(),getHeight(),22,22);
+                        gg.setColor(new Color(255,255,255,95));
+                        gg.drawRoundRect(1,1,getWidth()-3,getHeight()-3,22,22);
+                        gg.dispose();
+                        super.paintComponent(g);
+                    }
+                };
+                notificationLabel.setOpaque(false);
+                notificationLabel.setForeground(Color.WHITE);
+                notificationLabel.setFont(new Font("Dialog",Font.PLAIN,13));
+                layer.add(notificationLabel,JLayeredPane.POPUP_LAYER);
+            }
+            String notice=conciseNotice(message);
+            notificationLabel.setText(notice);
+            int width=Math.min(Math.max(260,notificationLabel.getFontMetrics(notificationLabel.getFont()).stringWidth(notice)+35),Math.max(260,frame.getWidth()-50));
+            notificationLabel.setBounds(Math.max(10,(frame.getWidth()-width)/2),Math.max(10,frame.getHeight()-106),width,42);
+            notificationLabel.setVisible(true);
+            layer.repaint();
+            if(notificationTimer!=null)notificationTimer.stop();
+            notificationTimer=new javax.swing.Timer(4200,e -> notificationLabel.setVisible(false));
+            notificationTimer.setRepeats(false);
+            notificationTimer.start();
+        });
+    }
     void log(String msg) {
         SwingUtilities.invokeLater(() -> {
             if (logBox == null) return;
@@ -1195,7 +1250,7 @@ public class SkyLauncher {
         setBusy(true); saveSettings();
         Thread t = new Thread(() -> {
             try { r.run(); } catch (HttpErr e) { log(what + " ERROR: " + e.getMessage() + (e.code == 401 || e.code == 403 || e.code == 404 ? " (private repo? set a token)" : "")); }
-            catch (Exception e) { log(what + " ERROR: " + e); }
+            catch (Exception e) { notifyUser(what + " failed: " + e.getMessage()); }
             finally { setBusy(false); SwingUtilities.invokeLater(this::refreshAll); }
         }); t.setDaemon(true); t.start();
     }
@@ -1766,10 +1821,31 @@ public class SkyLauncher {
         page.add(footer,BorderLayout.SOUTH);
         return page;
     }
+    static String profileActionLabel(String action,String profile) {
+        if(profile == null || profile.isBlank()) return action;
+        return switch(action) {
+            case "Play Minecraft" -> "Play: " + profile;
+            case "Open Game Folder", "Open Instance Folder" -> "Folder: " + profile;
+            case "Instance Settings", "Game Settings" -> "Settings: " + profile;
+            case "Delete Instance" -> "Delete: " + profile;
+            case "Check Active Pack" -> "Check pack: " + profile;
+            default -> action;
+        };
+    }
+    JButton profileAction(String action,Runnable callback) {
+        JButton button=visualButton(profileActionLabel(action,active()),false,callback);
+        button.putClientProperty("profileAction",action);
+        profileAwareButtons.add(button);
+        return button;
+    }
+    void updateProfileActions() {
+        for(JButton button:profileAwareButtons)
+            button.setText(profileActionLabel(s(button.getClientProperty("profileAction")),active()));
+    }
     JPanel actionsGrid(String[] names, Runnable[] callbacks) {
         JPanel grid=new JPanel(new GridLayout(0,2,16,16)); grid.setOpaque(false);
         grid.setPreferredSize(new Dimension(630, Math.max(1,(names.length+1)/2)*58+Math.max(0,(names.length-1)/2)*16));
-        for (int i=0;i<names.length;i++)grid.add(visualButton(names[i],false,callbacks[i]));
+        for (int i=0;i<names.length;i++)grid.add(profileAction(names[i],callbacks[i]));
         if (names.length%2==1)grid.add(new JLabel(""));
         return grid;
     }
@@ -2573,10 +2649,13 @@ public class SkyLauncher {
         runtimeF.setText(s(cfg.get("runtime_dir"))); tokenF.setText(s(cfg.get("token"))); mrTokenF.setText(s(cfg.get("modrinth_token")));
         loading = false; saveConfig(cfg); refreshAll(); updateAuth(); updateRamControls();
         if (visualProfileLabel != null) visualProfileLabel.setText("Selected profile: " + active());
+        updateProfileActions();
         if (visualInstanceBox != null) {
+            boolean previousLoading=loading; loading=true;
             visualInstanceBox.removeAllItems();
             for (String k : insts().keySet()) visualInstanceBox.addItem(k);
             visualInstanceBox.setSelectedItem(active());
+            loading=previousLoading;
         }
     }
     void refreshAll() { selectLoadFieldsOnly(); refreshList(); }
@@ -2619,7 +2698,7 @@ public class SkyLauncher {
         insts().put(name, defaultInstance(name, mc.trim(), (String) loader)); selectInstance(name);
     }
     void deleteInstance() {
-        if (insts().size() < 2) { JOptionPane.showMessageDialog(frame, "Keep at least one profile."); return; }
+        if (insts().size() < 2) { notifyUser("Keep at least one profile."); return; }
         String name = active(); if (JOptionPane.showConfirmDialog(frame, "Delete profile '" + name + "'?", "Delete", JOptionPane.YES_NO_OPTION) != 0) return;
         Map<String, Object> i = m(insts().remove(name)); Path gd = gameDir(i);
         if (gd.startsWith(BASE) && Files.isDirectory(gd) && JOptionPane.showConfirmDialog(frame, "Also delete " + gd + "?", "Delete files", JOptionPane.YES_NO_OPTION) == 0) { try { deleteTree(gd); } catch (IOException e) { log("Could not delete: " + e); } }
@@ -2821,7 +2900,7 @@ public class SkyLauncher {
     }
     void installSearched() {
         int row = searchTable.getSelectedRow();
-        if (row < 0) { JOptionPane.showMessageDialog(frame, "Select a search result first."); return; }
+        if (row < 0) { notifyUser("Select a search result first."); return; }
         int modelRow = searchTable.convertRowIndexToModel(row);
         if (modelRow < 0 || modelRow >= searchHits.size()) return;
         Map<String,Object> h=searchHits.get(modelRow);
@@ -3153,7 +3232,7 @@ public class SkyLauncher {
     }
     void reinstallPack() {
         Map<String,Object> i=inst();
-        if(s(i.get("pack_source")).isEmpty()) {JOptionPane.showMessageDialog(frame,"This profile has no modpack installed.");return;}
+        if(s(i.get("pack_source")).isEmpty()) {notifyUser("This profile has no modpack installed.");return;}
         if(JOptionPane.showConfirmDialog(frame,"Reinstall the latest " + s(i.get("pack_name"))+
                 "?\nThe current mods folder will be replaced; additional mods will be restored.",
                 "Reinstall modpack",JOptionPane.YES_NO_OPTION)!=JOptionPane.YES_OPTION)return;
@@ -3166,7 +3245,7 @@ public class SkyLauncher {
     void checkPackUpdate() { checkPackUpdates(false); }
     void checkAllPackUpdates() { checkPackUpdates(true); }
     void checkPackUpdates(boolean all) {
-        if(busy.get()) {JOptionPane.showMessageDialog(frame,"Another install is already running.");return;}
+        if(busy.get()) {notifyUser("Another install is already running.");return;}
         List<Map<String,Object>> targets=new ArrayList<>();
         if(all) targets.addAll(insts().values().stream().map(SkyLauncher::m).toList());
         else targets.add(inst());
@@ -3324,6 +3403,14 @@ public class SkyLauncher {
 
         check(s(m(m(c.get("instances")).get("Fathom Studios")).get("loader")).equals("neoforge"), "reads Python-written config");
         check(mvnPath("net.fabricmc:fabric-loader:0.15.0").equals("net/fabricmc/fabric-loader/0.15.0/fabric-loader-0.15.0.jar"), "maven path");
+        Map<String,Object> packVersionTest=defaultInstance("Pack","1.20.1","forge");
+        packVersionTest.put("version_id","old");
+        applyPackVersions(packVersionTest,"1.21.1","neoforge","21.1.199");
+        check("neoforge".equals(packVersionTest.get("loader")) &&
+            "1.21.1".equals(packVersionTest.get("mc_version")) &&
+            s(packVersionTest.get("version_id")).isEmpty(),"pack updates Minecraft and NeoForge");
+        check(profileActionLabel("Play Minecraft","Pack A").equals("Play: Pack A"),"profile button sync");
+        check(conciseNotice("X".repeat(130)).contains("Logs"),"long notices redirect to logs");
         check(vcmp("21.1.10", "21.1.9") > 0, "version compare"); check(shlex("-Xss1M \"a b\" c").equals(List.of("-Xss1M", "a b", "c")), "shlex");
         check(rulesAllow(Json.parse("[{\"action\":\"allow\"},{\"action\":\"disallow\",\"os\":{\"name\":\"" + (OS.equals("linux") ? "windows" : "linux") + "\"}}]")), "rules");
         check(parseEnv("A=1;B=two words").get("B").equals("two words"), "env parse");
