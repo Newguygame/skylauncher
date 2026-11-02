@@ -3343,7 +3343,7 @@ public class SkyLauncher {
         check(selectLauncherAsset(fakeRelease,"mac-app","osx","arm64").name.endsWith("-arm64.dmg"), "Apple Silicon updater asset");
         check(selectLauncherAsset(fakeRelease,"linux-deb","linux","x86_64").name.endsWith("amd64.deb"), "Linux deb updater asset");
         check(selectLauncherAsset(fakeRelease,"mac-app","osx","x86_64")==null, "missing platform build does not trigger update");
-        fakeRelease.put("tag_name", "v3.1.5");
+        fakeRelease.put("tag_name", "v3.1.6");
         check(selectLauncherAsset(fakeRelease,"portable-jar","windows","x86_64")==null, "wrong release asset rejected");
         fakeRelease.put("tag_name", "v3.1.5");
         check(compareReleaseVersions("v3.1.5", "3.1.3")>0, "updater version comparison");
