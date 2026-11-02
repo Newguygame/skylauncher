@@ -6,3 +6,10 @@ for f in background-1.jpg background-2.jpg background-3.jpg background-4.jpg bri
   test -s "assets/$f" || { echo "Missing assets/$f" >&2; exit 1; }
   cp "assets/$f" "$DEST/$f"
 done
+
+# Package all native icon formats so portable Java shortcuts also use SkyLauncher branding.
+for icon in png ico icns; do
+  test -s "icons/SkyLauncher.$icon" || { echo "Missing icons/SkyLauncher.$icon" >&2; exit 1; }
+  mkdir -p "$DEST/icons"
+  cp "icons/SkyLauncher.$icon" "$DEST/icons/SkyLauncher.$icon"
+done

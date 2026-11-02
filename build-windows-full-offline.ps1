@@ -11,9 +11,11 @@ New-Item -ItemType Directory -Force -Path 'build\launcher', 'build\classes', 'in
 javac --release 17 -encoding UTF-8 -d 'build\classes' 'src\SkyLauncher.java'
 if ($LASTEXITCODE -ne 0) { throw 'Could not build SkyLauncher.' }
 Get-ChildItem 'build\classes' -Filter 'SkyLauncher*.class' | Copy-Item -Destination 'build\launcher' -Force
-if (Test-Path 'icons\SkyLauncher.png') {
-  New-Item -ItemType Directory -Force -Path 'build\launcher\icons' | Out-Null
-  Copy-Item 'icons\SkyLauncher.png' 'build\launcher\icons\' -Force
+New-Item -ItemType Directory -Force -Path 'build\launcher\icons' | Out-Null
+foreach ($format in @('png', 'ico', 'icns')) {
+  $icon = "icons\SkyLauncher.$format"
+  if (!(Test-Path $icon)) { throw "Missing required application icon: $icon" }
+  Copy-Item $icon 'build\launcher\icons\' -Force
 }
 Copy-Item 'assets\background-*.jpg', 'assets\bridge-cert.pem', 'assets\updater-*.ps1', 'assets\updater-*.sh' 'build\launcher' -Force
 jar --create --file 'input\SkyLauncher.jar' --main-class SkyLauncher -C 'build\launcher' .
@@ -21,7 +23,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Could not package SkyLauncher.' }
 java -jar 'input\SkyLauncher.jar' --selftest
 if ($LASTEXITCODE -ne 0) { throw 'SkyLauncher checks failed.' }
 
-$jpackageArgs = @('--type', 'app-image', '--name', 'SkyLauncher', '--app-version', '3.1.5', '--input', 'input', '--main-jar', 'SkyLauncher.jar', '--main-class', 'SkyLauncher', '--dest', 'build/windows-app', '--vendor', 'SkyLauncher')
+$jpackageArgs = @('--type', 'app-image', '--name', 'SkyLauncher', '--app-version', '3.1.6', '--input', 'input', '--main-jar', 'SkyLauncher.jar', '--main-class', 'SkyLauncher', '--dest', 'build/windows-app', '--vendor', 'SkyLauncher')
 if (Test-Path 'icons\SkyLauncher.ico') { $jpackageArgs += @('--icon', 'icons\SkyLauncher.ico') }
 & jpackage @jpackageArgs
 if ($LASTEXITCODE -ne 0) { throw 'Could not build the Windows application.' }
@@ -32,7 +34,7 @@ $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
 if (!(Test-Path $iscc)) { throw 'Inno Setup 6 is required to build the Windows installer.' }
 & $iscc 'windows-installer\SkyLauncher.iss'
 if ($LASTEXITCODE -ne 0) { throw 'Could not create the Windows installer.' }
-$output = 'dist\SkyLauncher-3.1.5.exe'
+$output = 'dist\SkyLauncher-3.1.6.exe'
 if (!(Test-Path $output)) { throw 'Windows installer was not created.' }
 
 if ($TestInstaller) { & 'tests\test_windows_installer.ps1' -SetupPath $output }

@@ -1,4 +1,4 @@
-param([string]$SetupPath = 'dist\SkyLauncher-3.1.4.exe')
+param([string]$SetupPath = 'dist\SkyLauncher-3.1.6.exe')
 
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
@@ -24,6 +24,15 @@ try {
   if (!(Test-Path $installedApp)) { throw 'SkyLauncher.exe was not installed.' }
   if (!(Test-Path (Join-Path $destination 'runtime\release'))) { throw 'Bundled Java runtime was not installed.' }
   if ((Test-Path $desktop) -and !(Test-Path $shortcut)) { throw 'Desktop shortcut was not created.' }
+  $installedIcon = Join-Path $destination 'SkyLauncher.ico'
+  if (!(Test-Path $installedIcon)) { throw 'The custom SkyLauncher icon was not installed.' }
+  if (Test-Path $shortcut) {
+    $shell = New-Object -ComObject WScript.Shell
+    $link = $shell.CreateShortcut($shortcut)
+    if ($link.TargetPath -ne $installedApp) { throw "Desktop shortcut target is incorrect: $($link.TargetPath)" }
+    $iconSource = ($link.IconLocation -split ',')[0].Trim('"')
+    if ($iconSource -ne $installedIcon) { throw "Desktop shortcut does not use the custom SkyLauncher icon: $($link.IconLocation)" }
+  }
 
   $launched = Start-Process -FilePath $installedApp -ArgumentList '--selftest' -Wait -PassThru
   if ($launched.ExitCode -ne 0) { throw 'Installed SkyLauncher failed its self-test.' }

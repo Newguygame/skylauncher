@@ -1,4 +1,4 @@
-#define AppVersion "3.1.5"
+#define AppVersion "3.1.6"
 
 [Setup]
 AppId={{0C28F03B-7A15-4BAE-8CB4-87AF44A95116}
@@ -25,9 +25,12 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 [Files]
 Source: "..\build\windows-app\SkyLauncher\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[Files]
+Source: "..\icons\SkyLauncher.ico"; DestDir: "{app}"; Flags: ignoreversion
+
 [Icons]
-Name: "{autoprograms}\SkyLauncher"; Filename: "{app}\SkyLauncher.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\SkyLauncher"; Filename: "{app}\SkyLauncher.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autoprograms}\SkyLauncher"; Filename: "{app}\SkyLauncher.exe"; WorkingDir: "{app}"; IconFilename: "{app}\SkyLauncher.ico"; IconIndex: 0
+Name: "{autodesktop}\SkyLauncher"; Filename: "{app}\SkyLauncher.exe"; WorkingDir: "{app}"; IconFilename: "{app}\SkyLauncher.ico"; IconIndex: 0; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\SkyLauncher.exe"; Description: "Launch SkyLauncher"; Flags: postinstall nowait skipifsilent
