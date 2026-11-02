@@ -2179,18 +2179,11 @@ public class SkyLauncher {
                 SwingUtilities.invokeLater(()->{
                     launcherUpdateButton.setVisible(true);
                     launcherUpdateButton.setToolTipText("Install SkyLauncher "+tag+" and replace this version");
-                    // Native Windows installations automatically fetch and install the
-                    // newest verified GitHub EXE. Portable JAR and other OS updates
-                    // continue to request user confirmation.
-                    if(OS.equals("windows") && update.mode.equals("win-installer")) {
-                        log("Automatic Windows update to "+tag+" is available.");
-                        offerLauncherUpdate();
-                        return;
-                    }
-                    int choice=JOptionPane.showConfirmDialog(frame,
-                        "SkyLauncher "+tag+" is available (current: "+VERSION+").\nDownload and install it now?\nMinecraft profiles, worlds and settings are kept.",
-                        "SkyLauncher update",JOptionPane.YES_NO_OPTION,JOptionPane.QUESTION_MESSAGE);
-                    if(choice==JOptionPane.YES_OPTION)offerLauncherUpdate();
+                    // All supported installations use the same verified automatic updater.
+                    // Linux DEB still requires interactive system authorization via pkexec.
+                    // The updater stages and verifies the new package before closing SkyLauncher.
+                    log("Automatic "+OS+" update to "+tag+" is available ("+update.mode+").");
+                    offerLauncherUpdate();
                 });
             }catch(Exception e){log("Launcher update check failed: "+e.getMessage());}
         },"SkyLauncher-update-check");
