@@ -915,6 +915,49 @@ public class SkyLauncher {
             if (clear) clearMods(gd, log);
             int total = 0;
             try (ZipFile z = new ZipFile(zip.toFile())) {
+                // GitHub pack authors can declare exact versions in skylauncher-pack.json
+                // (minecraft, loader, loader_version). Also accept CurseForge's manifest.json.
+                Map<String,Object> packInfo = new LinkedHashMap<>();
+                for (var en = z.entries(); en.hasMoreElements(); ) {
+                    ZipEntry entry = en.nextElement();
+                    String path = entry.getName();
+                    int root = path.indexOf('/');
+                    if (root < 0 || entry.isDirectory()) continue;
+                    String relative = path.substring(root + 1);
+                    if (!relative.equals("skylauncher-pack.json") && !relative.equals("manifest.json")) continue;
+                    if (entry.getSize() > 1024 * 1024) continue;
+                    try (InputStream input = z.getInputStream(entry)) {
+                        byte[] raw = input.readNBytes(1024 * 1024 + 1);
+                        if (raw.length <= 1024 * 1024) {
+                            Map<String,Object> parsed = m(Json.parse(new String(raw,StandardCharsets.UTF_8)));
+                            if (relative.equals("skylauncher-pack.json")) {
+                                packInfo = parsed;
+                                break;
+                            }
+                            Map<String,Object> minecraft = m(parsed.get("minecraft"));
+                            String mc = s(minecraft.get("version"));
+                            String loader = "", loaderVersion = "";
+                            for (Object item : l(minecraft.get("modLoaders"))) {
+                                String id=s(m(item).get("id")).toLowerCase(Locale.ROOT);
+                                for(String supported:LOADERS) if(id.startsWith(supported+"-")) {
+                                    if(loader.isBlank() || b(m(item).get("primary"))) {
+                                        loader=supported;
+                                        loaderVersion=id.substring(supported.length()+1);
+                                    }
+                                }
+                            }
+                            if(!mc.isBlank() && !loader.isBlank())
+                                packInfo = new LinkedHashMap<>(Map.of("minecraft",mc,"loader",loader,"loader_version",loaderVersion));
+                        }
+                    }
+                }
+                String metadataMc = s(packInfo.get("minecraft"));
+                String metadataLoader = s(packInfo.get("loader")).toLowerCase(Locale.ROOT);
+                if(metadataMc.matches("[0-9]+(?:\\.[0-9A-Za-z_-]+){1,4}") &&
+                    Arrays.asList(LOADERS).contains(metadataLoader)) {
+                    applyPackVersions(inst,metadataMc,metadataLoader,s(packInfo.get("loader_version")));
+                    log.log("Pack selected Minecraft "+metadataMc+" / "+metadataLoader+" "+s(packInfo.get("loader_version")));
+                } else log.log("No complete Minecraft/loader metadata in GitHub pack; keeping this profile's versions.");
                 for (var en = z.entries(); en.hasMoreElements(); ) {
                     ZipEntry e = en.nextElement(); if (e.isDirectory()) continue;
                     String nm = e.getName(); int slash = nm.indexOf('/'); if (slash < 0) continue;
