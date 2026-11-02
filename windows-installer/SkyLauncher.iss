@@ -1,4 +1,4 @@
-#define AppVersion "3.1.3"
+#define AppVersion "3.1.4"
 
 [Setup]
 AppId={{0C28F03B-7A15-4BAE-8CB4-87AF44A95116}
@@ -16,7 +16,8 @@ SolidCompression=yes
 OutputDir=..\dist
 OutputBaseFilename=SkyLauncher-{#AppVersion}
 UninstallDisplayIcon={app}\SkyLauncher.exe
-UsePreviousTasks=no
+UsePreviousTasks=yes
+UsePreviousAppDir=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"

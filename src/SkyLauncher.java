@@ -35,7 +35,7 @@ import java.security.cert.Certificate;
 
 
 public class SkyLauncher {
-    static final String VERSION = "3.1.3";
+    static final String VERSION = "3.1.4";
     static final Path HOME = Paths.get(System.getProperty("user.home"));
     static final Path BASE = HOME.resolve(".ghmodlauncher");
     static final Path CONFIG = BASE.resolve("config.json");
@@ -1797,7 +1797,7 @@ public class SkyLauncher {
         login.setAlignmentX(Component.CENTER_ALIGNMENT);login.setMaximumSize(new Dimension(360,48));
         homeCenter.add(login);homeCenter.add(Box.createVerticalStrut(20));
         homeCenter.add(wallpaperChooser());
-        screenRoot.add(visualPage("SKYLAUNCHER", "BY FATHOM STUDIOS  |  v3.1.3",homeCenter),"Home");
+        screenRoot.add(visualPage("SKYLAUNCHER", "BY FATHOM STUDIOS  |  v3.1.4",homeCenter),"Home");
 
         screenRoot.add(visualPage("SERVERS", "Launch Minecraft and join your multiplayer servers",
             actionsGrid(new String[]{"Play Minecraft", "Choose Instance", "Game Settings", "Open Game Folder"},
@@ -1858,7 +1858,7 @@ public class SkyLauncher {
                     ()->openVisualUrl("https://github.com/Newguygame/skylauncher"),
                     ()->openVisualUrl("https://skylauncher.fathomstudios.org")})),"Social");
 
-        screenRoot.add(visualPage("ABOUT", "SkyLauncher 3.1.3  •  Fathom Studios",
+        screenRoot.add(visualPage("ABOUT", "SkyLauncher 3.1.4  •  Fathom Studios",
             actionsGrid(new String[]{"Source on GitHub", "Check Updates", "System & Game Settings", "Style Settings"},
                 new Runnable[]{()->openVisualUrl("https://github.com/Newguygame/skylauncher"),
                     this::checkLauncherUpdate,()->showWorkspace(1,false),()->showVisualPage("Settings")})),"About");
@@ -2041,45 +2041,193 @@ public class SkyLauncher {
         }
         return 0;
     }
+    // Updates are staged first. The currently running launcher exits before a separate
+    // platform helper replaces program files, keeping ~/.ghmodlauncher untouched.
+    static final class LauncherUpdate {
+        final String mode, name, url, digest;
+        LauncherUpdate(String mode, String name, String url, String digest) {
+            this.mode=mode; this.name=name; this.url=url; this.digest=digest;
+        }
+    }
+    static Path runningJar() throws IOException {
+        try { return Paths.get(SkyLauncher.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toAbsolutePath().normalize(); }
+        catch (Exception e) { throw new IOException("Cannot identify running SkyLauncher JAR", e); }
+    }
+    static boolean isNativeWindows(Path jar) {
+        if (!OS.equals("windows")) return false;
+        Path p=jar.getParent();
+        return p != null && p.getFileName().toString().equalsIgnoreCase("app")
+            && Files.isRegularFile(p.getParent().resolve("SkyLauncher.exe"));
+    }
+    static Path macBundle(Path jar) {
+        Path p=jar;
+        while (p!=null) { if (p.getFileName()!=null && p.getFileName().toString().endsWith(".app")) return p; p=p.getParent(); }
+        return null;
+    }
+    static boolean isNativeLinux(Path jar) {
+        // jpackage's Linux DEB installs to /opt/skylauncher/lib/app/SkyLauncher.jar.
+        return OS.equals("linux") && jar.startsWith(Paths.get("/opt/skylauncher"));
+    }
+    static String updateMode(Path jar) {
+        if(isNativeWindows(jar))return "win-installer";
+        if(OS.equals("osx") && macBundle(jar)!=null)return "mac-app";
+        if(isNativeLinux(jar))return "linux-deb";
+        return "portable-jar";
+    }
+    static LauncherUpdate selectLauncherAsset(Map<String,Object> release, String mode, String os, String arch) {
+        String tag=s(release.get("tag_name")).replaceFirst("^[vV]", "");
+        if(!tag.matches("\\d+\\.\\d+\\.\\d+"))return null;
+        String exactInstaller="SkyLauncher-"+tag+".exe";
+        String macArch=arch.equals("arm64")?"-arm64.dmg":"-intel.dmg";
+        for(Object obj:l(release.get("assets"))) {
+            Map<String,Object> a=m(obj);
+            String name=s(a.get("name")), lower=name.toLowerCase(Locale.ROOT);
+            boolean matches=switch(mode) {
+                case "portable-jar" -> name.equals("SkyLauncher.jar");
+                case "win-installer" -> name.equalsIgnoreCase(exactInstaller);
+                case "mac-app" -> lower.equals(("SkyLauncher-"+tag+macArch).toLowerCase(Locale.ROOT));
+                case "linux-deb" -> lower.matches("skylauncher_"+Pattern.quote(tag)+"_"+(arch.equals("arm64")?"(arm64|aarch64)":"(amd64|x86_64)")+"\\.deb");
+                default -> false;
+            };
+            if(!matches)continue;
+            String url=s(a.get("browser_download_url"));
+            String expected="https://github.com/Newguygame/skylauncher/releases/download/v"+tag+"/";
+            // Never install arbitrary URLs from an alternate repository or mirror.
+            if(!url.startsWith(expected) || !url.endsWith("/"+name))continue;
+            String digest=s(a.get("digest"));
+            if(!digest.matches("sha256:[a-fA-F0-9]{64}"))continue;
+            return new LauncherUpdate(mode,name,url,digest.substring(7).toLowerCase(Locale.ROOT));
+        }
+        return null;
+    }
+    static String sha256File(Path f) throws Exception {
+        MessageDigest md=MessageDigest.getInstance("SHA-256");
+        try(InputStream in=Files.newInputStream(f)) { byte[] buf=new byte[65536]; int n; while((n=in.read(buf))!=-1) md.update(buf,0,n); }
+        return HexFormat.of().formatHex(md.digest());
+    }
+    static Path downloadVerifiedUpdate(LauncherUpdate update) throws Exception {
+        Path dir=Files.createTempDirectory("skylauncher-update-");
+        Path target=dir.resolve(update.name);
+        try {
+            HttpClient client=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20))
+                .followRedirects(HttpClient.Redirect.NORMAL).build();
+            HttpRequest request=HttpRequest.newBuilder(URI.create(update.url))
+                .timeout(Duration.ofMinutes(15)).header("User-Agent", "SkyLauncher-Updater/"+VERSION).GET().build();
+            HttpResponse<InputStream> response=client.send(request,HttpResponse.BodyHandlers.ofInputStream());
+            if(response.statusCode()!=200 || !"https".equalsIgnoreCase(response.uri().getScheme())) {
+                try(InputStream in=response.body()) { in.transferTo(OutputStream.nullOutputStream()); }
+                throw new IOException("Update download failed: HTTP "+response.statusCode());
+            }
+            try(InputStream in=response.body(); OutputStream out=Files.newOutputStream(target)) {
+                byte[] buf=new byte[65536]; int n; long total=0;
+                while((n=in.read(buf))!=-1) {
+                    total+=n;
+                    if(total>1_500_000_000L)throw new IOException("Update exceeds the 1.5 GB limit");
+                    out.write(buf,0,n);
+                }
+            }
+            if(!sha256File(target).equals(update.digest))throw new IOException("SHA-256 verification failed: update was not installed");
+            if(update.mode.equals("portable-jar")) {
+                try(java.util.jar.JarFile jf=new java.util.jar.JarFile(target.toFile())) {
+                    if(jf.getEntry("SkyLauncher.class")==null)throw new IOException("Update is not a SkyLauncher JAR");
+                }
+            }
+            return target;
+        }catch(Exception ex) {
+            Files.deleteIfExists(target); Files.deleteIfExists(dir); throw ex;
+        }
+    }
+    static Path writeUpdaterScript(String resource, Path staging, String extension) throws IOException {
+        Path p=staging.resolve("skylauncher-update"+extension);
+        try(InputStream in=SkyLauncher.class.getResourceAsStream(resource)) {
+            if(in==null)throw new IOException("Updater component missing: "+resource);
+            Files.copy(in,p,StandardCopyOption.REPLACE_EXISTING);
+        }
+        p.toFile().setExecutable(true);
+        return p;
+    }
+    static ProcessBuilder updaterProcess(LauncherUpdate update, Path download, Path source) throws Exception {
+        Path dir=download.getParent();
+        long pid=ProcessHandle.current().pid();
+        String mode=update.mode;
+        if(OS.equals("windows")) {
+            Path script=writeUpdaterScript("/updater-windows.ps1",dir,".ps1");
+            String exe=mode.equals("win-installer")?source.getParent().getParent().resolve("SkyLauncher.exe").toString():"";
+            Path java=Paths.get(System.getProperty("java.home"),"bin","javaw.exe");
+            if(!Files.isRegularFile(java))java=Paths.get(System.getProperty("java.home"),"bin","java.exe");
+            return new ProcessBuilder("powershell.exe","-NoProfile","-ExecutionPolicy","Bypass","-File",script.toString(),
+                "-Mode",mode,"-Package",download.toString(),"-Target",source.toString(),"-Launcher",exe,
+                "-Java",java.toString(),"-ParentPid",String.valueOf(pid));
+        }
+        Path script=writeUpdaterScript("/updater-unix.sh",dir,".sh");
+        Path java=Paths.get(System.getProperty("java.home"),"bin","java");
+        String app=mode.equals("mac-app")?macBundle(source).toString():"";
+        return new ProcessBuilder("/bin/sh",script.toString(),mode,download.toString(),source.toString(),
+            app,java.toString(),String.valueOf(pid));
+    }
     void checkLauncherUpdate() {
-        String repo = launcherRepo();
-        if (repo.isEmpty()) { log("Launcher update checks disabled: set SKYLAUNCHER_UPDATE_REPO=owner/repo or launcher_update_repo in config.json"); return; }
-        Thread worker = new Thread(() -> {
+        String repo=launcherRepo();
+        if(repo.isEmpty())return;
+        Thread worker=new Thread(()->{
             try {
-                Map<String, Object> rel = m(getJson("https://api.github.com/repos/" + repo + "/releases/latest", ghHeaders(cfg, null)));
-                String tag = s(rel.get("tag_name"));
-                if (compareReleaseVersions(tag, VERSION) <= 0) return;
-                availableLauncherRelease = rel;
-                SwingUtilities.invokeLater(() -> {
+                Map<String,Object> rel=m(getJson("https://api.github.com/repos/"+repo+"/releases/latest",ghHeaders(cfg,null)));
+                String tag=s(rel.get("tag_name"));
+                if(compareReleaseVersions(tag,VERSION)<=0)return;
+                LauncherUpdate update=selectLauncherAsset(rel,updateMode(runningJar()),OS,ARCH);
+                if(update==null) { log("Version "+tag+" is available, but a verified updater package for this platform is not yet available."); return; }
+                availableLauncherRelease=rel;
+                SwingUtilities.invokeLater(()->{
                     launcherUpdateButton.setVisible(true);
-                    launcherUpdateButton.setToolTipText("SkyLauncher " + tag + " is available");
-                    frame.revalidate();
-                    int choice = JOptionPane.showConfirmDialog(frame,
-                        "SkyLauncher " + tag + " is available (installed: " + VERSION + ").\nUpdate now?",
-                        "SkyLauncher update available", JOptionPane.YES_NO_OPTION, JOptionPane.INFORMATION_MESSAGE);
-                    if (choice == JOptionPane.YES_OPTION) offerLauncherUpdate();
+                    launcherUpdateButton.setToolTipText("Install SkyLauncher "+tag+" and replace this version");
+                    int choice=JOptionPane.showConfirmDialog(frame,
+                        "SkyLauncher "+tag+" is available (current: "+VERSION+").\nDownload and install it now?\nMinecraft profiles, worlds and settings are kept.",
+                        "SkyLauncher update",JOptionPane.YES_NO_OPTION,JOptionPane.QUESTION_MESSAGE);
+                    if(choice==JOptionPane.YES_OPTION)offerLauncherUpdate();
                 });
-            } catch (Exception e) { log("Launcher update check failed: " + e.getMessage()); }
-        }, "SkyLauncher-update-check");
+            }catch(Exception e){log("Launcher update check failed: "+e.getMessage());}
+        },"SkyLauncher-update-check");
         worker.setDaemon(true); worker.start();
     }
     void offerLauncherUpdate() {
-        Map<String, Object> rel = availableLauncherRelease;
-        if (rel == null) return;
-        String extension = OS.equals("windows") ? ".exe" : OS.equals("osx") ? ".dmg" : ".deb";
-        String arch = ARCH.equals("arm64") ? "arm64" : ARCH.equals("x86_64") ? "x64" : "x86";
-        String url = "";
-        for (Object o : l(rel.get("assets"))) {
-            Map<String, Object> a = m(o);
-            String name = s(a.get("name")).toLowerCase(Locale.ROOT);
-            if (name.endsWith(extension) && (name.contains(arch) || !name.contains("arm64") && !name.contains("aarch64"))) {
-                url = s(a.get("browser_download_url")); break;
-            }
+        Map<String,Object> rel=availableLauncherRelease;
+        if(rel==null) {
+            JOptionPane.showMessageDialog(frame,"No verified update is available for this platform yet.");
+            return;
         }
-        if (url.isEmpty()) url = s(rel.get("html_url"));
-        if (url.isEmpty()) { JOptionPane.showMessageDialog(frame, "No installer or release page is available."); return; }
-        try { Desktop.getDesktop().browse(URI.create(url)); }
-        catch (Exception e) { JOptionPane.showMessageDialog(frame, "Cannot open update link: " + e.getMessage()); }
+        if(game!=null || busy.get()) {
+            JOptionPane.showMessageDialog(frame,"Please finish the current Minecraft game or download before updating.");
+            return;
+        }
+        LauncherUpdate update;
+        Path source;
+        try {
+            source=runningJar();
+            if(!Files.isRegularFile(source))throw new IOException("SkyLauncher must run from its installed JAR to update");
+            update=selectLauncherAsset(rel,updateMode(source),OS,ARCH);
+            if(update==null)throw new IOException("No verified platform installer is attached to this GitHub release yet");
+            if(update.mode.equals("linux-deb") && !Files.isExecutable(Paths.get("/usr/bin/pkexec")))
+                throw new IOException("Linux package updates need polkit (pkexec). Install it or update via your package manager.");
+        }catch(Exception e) {JOptionPane.showMessageDialog(frame,e.getMessage(),"Updater",JOptionPane.ERROR_MESSAGE);return;}
+        launcherUpdateButton.setEnabled(false);
+        setBusy(true);
+        Thread worker=new Thread(()->{
+            try {
+                log("Downloading "+update.name+" from GitHub Releases...");
+                Path file=downloadVerifiedUpdate(update);
+                log("Verified release SHA-256. Updating once SkyLauncher closes...");
+                ProcessBuilder pb=updaterProcess(update,file,source);
+                pb.directory(file.getParent().toFile());
+                pb.redirectOutput(file.getParent().resolve("updater.log").toFile());
+                pb.redirectErrorStream(true);
+                pb.start();
+                SwingUtilities.invokeLater(()->{saveSettings();frame.dispose();System.exit(0);});
+            }catch(Exception e){
+                log("Update failed; current version was not changed: "+e);
+                SwingUtilities.invokeLater(()->JOptionPane.showMessageDialog(frame,
+                    "Update failed. Your current SkyLauncher is unchanged.\n"+e.getMessage(),"SkyLauncher updater",JOptionPane.ERROR_MESSAGE));
+            }finally{setBusy(false);SwingUtilities.invokeLater(()->launcherUpdateButton.setEnabled(true));}
+        },"SkyLauncher-install-update");
+        worker.setDaemon(true);worker.start();
     }
 
     JPanel modsTab() {
@@ -3181,6 +3329,24 @@ public class SkyLauncher {
         check(digest("SHA-1", "abc".getBytes()).equals("a9993e364706816aba3e25717850c26c9cd0d89d"), "sha1");
         check(shellQuote("It's sky").equals("'It'\\''s sky'"), "shell escaping");
         check(desktopQuote("a b").equals("\"a b\""), "desktop escaping");
+        Map<String,Object> fakeRelease = new LinkedHashMap<>();
+        fakeRelease.put("tag_name", "v3.1.4");
+        String exampleDigest = "sha256:" + "a".repeat(64);
+        fakeRelease.put("assets", List.of(
+            Map.of("name","SkyLauncher.jar", "browser_download_url","https://github.com/Newguygame/skylauncher/releases/download/v3.1.4/SkyLauncher.jar", "digest",exampleDigest),
+            Map.of("name","SkyLauncher-3.1.4.exe", "browser_download_url","https://github.com/Newguygame/skylauncher/releases/download/v3.1.4/SkyLauncher-3.1.4.exe", "digest",exampleDigest),
+            Map.of("name","SkyLauncher-3.1.4-arm64.dmg", "browser_download_url","https://github.com/Newguygame/skylauncher/releases/download/v3.1.4/SkyLauncher-3.1.4-arm64.dmg", "digest",exampleDigest),
+            Map.of("name","skylauncher_3.1.4_amd64.deb", "browser_download_url","https://github.com/Newguygame/skylauncher/releases/download/v3.1.4/skylauncher_3.1.4_amd64.deb", "digest",exampleDigest)));
+        check(selectLauncherAsset(fakeRelease,"portable-jar","windows","x86_64").name.equals("SkyLauncher.jar"), "portable JAR updater asset");
+        check(selectLauncherAsset(fakeRelease,"win-installer","windows","x86_64").name.endsWith(".exe"), "Windows installer update asset");
+        check(selectLauncherAsset(fakeRelease,"mac-app","osx","arm64").name.endsWith("-arm64.dmg"), "Apple Silicon updater asset");
+        check(selectLauncherAsset(fakeRelease,"linux-deb","linux","x86_64").name.endsWith("amd64.deb"), "Linux deb updater asset");
+        check(selectLauncherAsset(fakeRelease,"mac-app","osx","x86_64")==null, "missing platform build does not trigger update");
+        fakeRelease.put("tag_name", "v3.1.5");
+        check(selectLauncherAsset(fakeRelease,"portable-jar","windows","x86_64")==null, "wrong release asset rejected");
+        fakeRelease.put("tag_name", "v3.1.4");
+        check(compareReleaseVersions("v3.1.4", "3.1.3")>0, "updater version comparison");
+
         setShade("Black", "#29AABB", "#202833", "#FFFFFF");
         check(BG.equals(new Color(0x202833)) && FG.equals(Color.WHITE) && ACCENT.equals(new Color(0x29AABB)), "custom theme colors");
         check(SURFACE.getRGB() != BG.getRGB(), "background surface contrast");

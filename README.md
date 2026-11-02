@@ -55,7 +55,7 @@ It's a good idea to back up your worlds and settings before making major changes
 [Report a problem or ask a question on GitHub](https://github.com/Newguygame/skylauncher/issues).
 
 
-## SkyLauncher 3.1.3 release details
+## SkyLauncher 3.1.4 release details
 
 The Windows installer, macOS Intel and Apple Silicon DMGs, Linux DEB, and Linux portable archives
 are built from the same `src/SkyLauncher.java`. Native packages bundle Java; the portable JAR
@@ -75,6 +75,20 @@ from GitHub Actions.
 
 ### Publishing
 
-The build workflow publishes `v3.1.3` only for a push to `main` with commit title beginning
-`Release SkyLauncher 3.1.3`, or on a `v*` tag push. The release job waits for platform builds
+The build workflow publishes `v3.1.4` only for a push to `main` with commit title beginning
+`Release SkyLauncher 3.1.4`, or on a `v*` tag push. The release job waits for platform builds
 and tests to pass. This is the requested exception to the no-version-bump policy.
+
+
+## Updating SkyLauncher in place
+
+SkyLauncher checks official GitHub Releases on startup. Clicking **Update launcher**
+now downloads the matching release asset, checks the SHA-256 digest supplied by GitHub,
+exits the running launcher, and starts a small platform updater to replace the previous
+application. Windows installed EXEs use the same Inno Setup AppId, macOS app bundles
+are swapped with rollback, Linux `.deb` installs use polkit authorization, and portable
+JARs are replaced in place. If no matching download or digest is present, the update
+will not be offered. Minecraft worlds, modpacks and user settings are never deleted.
+
+On Linux, native `.deb` updating requires `pkexec`; on macOS, an app in a protected
+location may require moving it into `~/Applications`.
