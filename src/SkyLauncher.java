@@ -2179,6 +2179,14 @@ public class SkyLauncher {
                 SwingUtilities.invokeLater(()->{
                     launcherUpdateButton.setVisible(true);
                     launcherUpdateButton.setToolTipText("Install SkyLauncher "+tag+" and replace this version");
+                    // Native Windows installations automatically fetch and install the
+                    // newest verified GitHub EXE. Portable JAR and other OS updates
+                    // continue to request user confirmation.
+                    if(OS.equals("windows") && update.mode.equals("win-installer")) {
+                        log("Automatic Windows update to "+tag+" is available.");
+                        offerLauncherUpdate();
+                        return;
+                    }
                     int choice=JOptionPane.showConfirmDialog(frame,
                         "SkyLauncher "+tag+" is available (current: "+VERSION+").\nDownload and install it now?\nMinecraft profiles, worlds and settings are kept.",
                         "SkyLauncher update",JOptionPane.YES_NO_OPTION,JOptionPane.QUESTION_MESSAGE);
