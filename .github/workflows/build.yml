@@ -92,7 +92,7 @@ jobs:
         run: |
           icon_arg=()
           if [[ -f 'icons/SkyLauncher.${{ matrix.icon }}' ]]; then icon_arg=(--icon 'icons/SkyLauncher.${{ matrix.icon }}'); fi
-          jpackage --type '${{ matrix.package }}' --name '${{ matrix.name }}' --app-version 3.1.4 \
+          jpackage --type '${{ matrix.package }}' --name '${{ matrix.name }}' --app-version 3.1.5 \
             --input input --main-jar SkyLauncher.jar --main-class SkyLauncher \
             --dest dist --vendor SkyLauncher "${icon_arg[@]}" \
             --description 'SkyLauncher native installer - application and Java bundled locally'
@@ -171,7 +171,7 @@ jobs:
     # Make the verified JAR available without waiting for third-party Mac runners.
     # This GITHUB_TOKEN push would not trigger another workflow from a new tag,
     # so the current main-branch workflow publishes the release directly.
-    if: github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'Release SkyLauncher 3.1.4')
+    if: github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'Release SkyLauncher 3.1.5')
     needs: verify
     runs-on: ubuntu-24.04
     steps:
@@ -192,15 +192,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: v3.1.4
+          TAG: v3.1.5
         shell: bash
         run: |
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --target "$GITHUB_SHA" --title 'SkyLauncher 3.1.4' --notes 'SkyLauncher 3.1.4 adds in-place updates. Windows/macOS/Linux installers and portable Java packages will appear as soon as their platform builds complete. Minecraft worlds, packs and settings are preserved.'
+            gh release create "$TAG" --target "$GITHUB_SHA" --title 'SkyLauncher 3.1.5' --notes 'SkyLauncher 3.1.5 adds in-place updates. Windows/macOS/Linux installers and portable Java packages will appear as soon as their platform builds complete. Minecraft worlds, packs and settings are preserved.'
           fi
           gh release upload "$TAG" SkyLauncher.jar --clobber
   publish:
-    if: always() && (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'Release SkyLauncher 3.1.4'))) && needs.build.result == 'success' && needs.linux-portable.result == 'success'
+    if: always() && (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'Release SkyLauncher 3.1.5'))) && needs.build.result == 'success' && needs.linux-portable.result == 'success'
     needs: [build, linux-portable, publish-portable]
     runs-on: ubuntu-latest
     steps:
@@ -228,7 +228,7 @@ jobs:
           from zipfile import ZipFile
           assets = Path('release-assets')
           names = {p.name for p in assets.iterdir()}
-          expected = {'SkyLauncher-3.1.4.exe', 'SkyLauncher-Universal-macOS-Installer.zip',
+          expected = {'SkyLauncher-3.1.5.exe', 'SkyLauncher-Universal-macOS-Installer.zip',
                       'SkyLauncher-Universal-Linux-Installer.zip', 'SkyLauncher.jar'}
           if not expected.issubset(names): raise SystemExit(f'Missing release assets: {expected - names}')
           for name in ['SkyLauncher-Universal-macOS-Installer.zip', 'SkyLauncher-Universal-Linux-Installer.zip']:
@@ -242,10 +242,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v3.1.4' }}
+          TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v3.1.5' }}
         shell: bash
         run: |
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --target "$GITHUB_SHA" --title "SkyLauncher 3.1.4" --notes "SkyLauncher 3.1.4: visual home screen, four user-provided selectable wallpapers, terminal style, generic RAM defaults and per-pack overrides, CurseForge VPS mod/modpack search and download, Modrinth and Fathom pack updates, compatible mods filter. Java is bundled in native Windows/macOS/Linux installers; a portable JAR is also included. API keys remain on the VPS."
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "SkyLauncher 3.1.5" --notes "SkyLauncher 3.1.5: visual home screen, four user-provided selectable wallpapers, terminal style, generic RAM defaults and per-pack overrides, CurseForge VPS mod/modpack search and download, Modrinth and Fathom pack updates, compatible mods filter. Java is bundled in native Windows/macOS/Linux installers; a portable JAR is also included. API keys remain on the VPS."
           fi
           gh release upload "$TAG" release-assets/* --clobber
