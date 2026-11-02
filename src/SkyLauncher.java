@@ -25,10 +25,17 @@ import java.util.zip.*;
 import javax.swing.*;
 import javax.swing.event.*;
 import javax.swing.table.*;
+import javax.swing.plaf.basic.BasicTabbedPaneUI;
 import javax.imageio.ImageIO;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManagerFactory;
+import java.security.KeyStore;
+import java.security.cert.CertificateFactory;
+import java.security.cert.Certificate;
+
 
 public class SkyLauncher {
-    static final String VERSION = "3.1.2-java";
+    static final String VERSION = "3.1.3";
     static final Path HOME = Paths.get(System.getProperty("user.home"));
     static final Path BASE = HOME.resolve(".ghmodlauncher");
     static final Path CONFIG = BASE.resolve("config.json");
@@ -137,13 +144,42 @@ public class SkyLauncher {
     // ============================================================ HTTP
     static final HttpClient HC = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER)
             .connectTimeout(Duration.ofSeconds(30)).build();
+    // Only this server and port may use the dedicated certificate trust store.
+    // Certificate verification and hostname/IP validation are NEVER disabled.
+    static final String PERSONAL_CF_HOST = "185.83.154.171";
+    static final int PERSONAL_CF_PORT = 25568;
+    static final String PERSONAL_CF_URL = "https://" + PERSONAL_CF_HOST + ":" + PERSONAL_CF_PORT;
+    static final HttpClient PERSONAL_CF_CLIENT = createPersonalCfClient();
+    static HttpClient createPersonalCfClient() {
+        try (InputStream certInput = SkyLauncher.class.getResourceAsStream("/bridge-cert.pem")) {
+            if (certInput == null) throw new IllegalStateException("Missing bundled VPS certificate");
+            Certificate cert = CertificateFactory.getInstance("X.509").generateCertificate(certInput);
+            KeyStore store = KeyStore.getInstance("PKCS12");
+            store.load(null, null);
+            store.setCertificateEntry("personal-skylauncher-vps", cert);
+            TrustManagerFactory tm = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            tm.init(store);
+            SSLContext context = SSLContext.getInstance("TLS");
+            context.init(null, tm.getTrustManagers(), null);
+            return HttpClient.newBuilder().sslContext(context).followRedirects(HttpClient.Redirect.NEVER)
+                    .connectTimeout(Duration.ofSeconds(30)).build();
+        } catch (Exception ex) { throw new IllegalStateException("Could not load pinned VPS certificate", ex); }
+    }
+    static boolean personalCfOrigin(URI uri) {
+        return "https".equalsIgnoreCase(uri.getScheme()) && PERSONAL_CF_HOST.equals(uri.getHost())
+                && uri.getPort() == PERSONAL_CF_PORT;
+    }
+
     static final class HttpErr extends IOException {
         final int code; final String body;
         HttpErr(int code, String body, String url) { super("HTTP " + code + " for " + url); this.code = code; this.body = body; }
     }
     static HttpResponse<InputStream> open(String method, String url, Map<String, String> h, byte[] body) throws IOException {
         String cur = url, firstHost = URI.create(url).getHost();
+        boolean personalBridge = personalCfOrigin(URI.create(url));
         for (int hop = 0; hop < 8; hop++) {
+            if (personalBridge && !personalCfOrigin(URI.create(cur)))
+                throw new IOException("Blocked redirect outside the secure personal VPS");
             HttpRequest.Builder rb = HttpRequest.newBuilder(URI.create(cur)).timeout(Duration.ofSeconds(300))
                     .setHeader("User-Agent", "skylauncher-java");
             boolean sameHost = Objects.equals(URI.create(cur).getHost(), firstHost);
@@ -153,7 +189,7 @@ public class SkyLauncher {
             }
             rb.method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofByteArray(body));
             HttpResponse<InputStream> r;
-            try { r = HC.send(rb.build(), HttpResponse.BodyHandlers.ofInputStream()); }
+            try { r = (personalBridge ? PERSONAL_CF_CLIENT : HC).send(rb.build(), HttpResponse.BodyHandlers.ofInputStream()); }
             catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException(e); }
             int c = r.statusCode();
             Optional<String> loc = r.headers().firstValue("location");
@@ -247,7 +283,8 @@ public class SkyLauncher {
         Map<String, Object> i = new LinkedHashMap<>();
         i.put("mc_version", mc); i.put("loader", loader); i.put("loader_version", "");
         i.put("mods_dir", BASE.resolve("instances").resolve(name).resolve(".minecraft").resolve("mods").toString());
-        i.put("java_path", ""); i.put("memory_mb", "4096"); i.put("jvm_args", ""); i.put("launch_cmd", "");
+        i.put("java_path", ""); i.put("memory_mb", "4096"); i.put("memory_inherit", true);
+        i.put("jvm_args", ""); i.put("launch_cmd", "");
         i.put("version_id", ""); i.put("installed_key", ""); i.put("mods", new LinkedHashMap<String, Object>());
         i.put("pack_repo", ""); i.put("pack_ref", ""); i.put("window_width", ""); i.put("window_height", "");
         i.put("fullscreen", false); i.put("game_args", ""); i.put("env_vars", ""); i.put("pre_launch_cmd", "");
@@ -260,12 +297,21 @@ public class SkyLauncher {
         cfg.put("token", ""); cfg.put("active", "Default"); cfg.put("instances", new LinkedHashMap<String, Object>());
         cfg.put("dep_map", new LinkedHashMap<String, Object>()); cfg.put("runtime_dir", BASE.resolve("runtime").toString());
         cfg.put("msa_client_id", ""); cfg.put("account", null); cfg.put("curseforge_api_key", ""); cfg.put("modrinth_token", "");
+        cfg.put("curseforge_bridge_url", PERSONAL_CF_URL); cfg.put("mod_search_provider", "Modrinth");
+        cfg.put("generic_memory_mb", "4096"); cfg.put("generic_jvm_args", "");
         try { cfg.putAll(m(Json.parse(Files.readString(CONFIG)))); } catch (Exception ignored) { }
         Map<String, Object> insts = m(cfg.get("instances"));
         cfg.put("instances", insts);
         if (insts.isEmpty()) insts.put("Default", defaultInstance("Default", "", "fabric"));
         for (var e : insts.entrySet()) {
             Map<String, Object> i = m(e.getValue());
+            // Legacy builds wrote 4096 MB into every pack, even when the user did not
+            // specify RAM. Treat that legacy default as inherited, and preserve any
+            // different old value as a pack-specific override.
+            if (!i.containsKey("memory_inherit")) {
+                String legacy = s(i.get("memory_mb")).trim();
+                i.put("memory_inherit", legacy.isEmpty() || legacy.equals("4096"));
+            }
             for (var d : defaultInstance(e.getKey(), "", "fabric").entrySet()) i.putIfAbsent(d.getKey(), d.getValue());
             insts.put(e.getKey(), i);
         }
@@ -278,6 +324,22 @@ public class SkyLauncher {
             Files.writeString(CONFIG, Json.write(cfg), StandardCharsets.UTF_8);
             try { Files.setPosixFilePermissions(CONFIG, java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")); } catch (Exception ignored) { }
         } catch (IOException e) { System.err.println("could not save config: " + e); }
+    }
+
+    static int validRamMb(Object value, int fallback) {
+        try {
+            int mb = Integer.parseInt(s(value).trim());
+            return mb >= 512 && mb <= 262144 ? mb : fallback;
+        } catch (NumberFormatException e) { return fallback; }
+    }
+    static int effectiveMemoryMb(Map<String, Object> cfg, Map<String, Object> instance) {
+        int general = validRamMb(cfg.get("generic_memory_mb"), 4096);
+        if (b(instance.get("memory_inherit"))) return general;
+        return validRamMb(instance.get("memory_mb"), general);
+    }
+    static String effectiveJvmArgs(Map<String, Object> cfg, Map<String, Object> instance) {
+        String perPack = s(instance.get("jvm_args")).trim();
+        return perPack.isEmpty() ? s(cfg.get("generic_jvm_args")).trim() : perPack;
     }
 
     // ============================================================ Microsoft / Minecraft auth
@@ -685,6 +747,46 @@ public class SkyLauncher {
         String tok = s(cfg.get("modrinth_token")).trim(); return tok.isEmpty() ? new HashMap<>() : new HashMap<>(Map.of("Authorization", tok));
     }
     static Object mr(Map<String, Object> cfg, String path) throws IOException { return getJson("https://api.modrinth.com/v2" + path, mrHeaders(cfg)); }
+    // CurseForge API access is performed ONLY by the VPS bridge. The real CurseForge
+    // x-api-key must never be stored in this launcher or sent to client computers.
+    static String cfConfiguredUrl(Map<String, Object> cfg) {
+        String url = s(cfg.get("curseforge_bridge_url")).trim();
+        return url.isEmpty() ? PERSONAL_CF_URL : url;
+    }
+    static String cfBase(Map<String, Object> cfg) throws IOException {
+        return validatedCfAddress(cfConfiguredUrl(cfg));
+    }
+    static String validatedCfAddress(String input) throws IOException {
+        URI uri;
+        try { uri = URI.create(input); } catch (IllegalArgumentException e) { throw new IOException("Invalid CurseForge VPS URL", e); }
+        if (uri.getHost() == null || uri.getUserInfo() != null || uri.getQuery() != null || uri.getFragment() != null ||
+                !("https".equalsIgnoreCase(uri.getScheme()) ||
+                  ("http".equalsIgnoreCase(uri.getScheme()) &&
+                  ("localhost".equalsIgnoreCase(uri.getHost()) || "127.0.0.1".equals(uri.getHost())))))
+            throw new IOException("The VPS must use HTTPS (HTTP is only accepted on localhost for testing).");
+        if (!uri.getPath().isEmpty() && !uri.getPath().equals("/"))
+            throw new IOException("Use only the base VPS URL, without a path.");
+        return input.replaceAll("/+$", "");
+    }
+    static Path launcherDirectory() {
+        try {
+            Path location = Paths.get(SkyLauncher.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toAbsolutePath();
+            return Files.isDirectory(location) ? location : location.getParent();
+        } catch (Exception ignored) { return Paths.get(System.getProperty("user.dir", ".")).toAbsolutePath(); }
+    }
+    static Map<String, String> cfHeaders(Map<String, Object> cfg) {
+        // Public CurseForge relay. No shared bearer token is ever shipped or required.
+        // The separate CurseForge API key is kept exclusively on the VPS.
+        return Map.of("Accept", "application/json");
+    }
+    static Object cf(Map<String, Object> cfg, String path) throws IOException {
+        return getJson(cfBase(cfg) + path, cfHeaders(cfg));
+    }
+    static String cfDownloadUrl(Map<String, Object> cfg, String modId, String fileId) throws IOException {
+        if (!modId.matches("[1-9][0-9]{0,12}") || !fileId.matches("[1-9][0-9]{0,12}"))
+            throw new IOException("Invalid CurseForge mod or file ID");
+        return cfBase(cfg) + "/v1/download/" + modId + "/" + fileId;
+    }
     static String ghNameLoaders(String n) {   // loaders a file name mentions
         n = n.toLowerCase(); Set<String> f = new TreeSet<>();
         if (n.contains("neoforge")) { f.add("neoforge"); n = n.replace("neoforge", ""); }
@@ -733,6 +835,33 @@ public class SkyLauncher {
                 for (Object d : l(v.get("dependencies"))) if ("required".equals(s(m(d).get("dependency_type"))) && m(d).get("project_id") != null) deps.add(m(d).get("project_id"));
                 Map<String, Object> r = new LinkedHashMap<>(); r.put("id", v.get("id")); r.put("label", s(v.get("version_number")).isEmpty() ? v.get("name") : v.get("version_number"));
                 r.put("channel", v.get("version_type") == null ? "release" : v.get("version_type")); r.put("files", files); r.put("deps", deps); out.add(r);
+            }
+        } else if (modSource(key).equals("curseforge")) {
+            String modId = key.substring("curseforge:".length());
+            if (!modId.matches("[1-9][0-9]{0,12}")) throw new IOException("Invalid CurseForge project ID");
+            String query = "?version=" + enc(mc) + "&loader=" + enc(loader);
+            for (Object o : l(m(cf(cfg, "/v1/mods/" + modId + "/files" + query)).get("data"))) {
+                Map<String, Object> f = m(o);
+                if (!s(f.get("name")).toLowerCase(Locale.ROOT).endsWith(".jar")) continue;
+                String fileId = s(f.get("id"));
+                if (!fileId.matches("[1-9][0-9]{0,12}")) continue;
+                Map<String, Object> file = new LinkedHashMap<>();
+                file.put("name", f.get("name"));
+                file.put("url", cfDownloadUrl(cfg, modId, fileId));
+                file.put("sha1", f.get("sha1"));
+                file.put("size", f.get("size"));
+                Map<String, Object> entry = new LinkedHashMap<>();
+                entry.put("id", fileId);
+                entry.put("label", s(f.get("name")));
+                entry.put("channel", n(f.get("releaseType"), 1) == 1 ? "release" : "beta");
+                entry.put("files", List.of(file));
+                List<Object> deps = new ArrayList<>();
+                for (Object d : l(f.get("required"))) {
+                    String dep = s(d);
+                    if (dep.matches("[1-9][0-9]{0,12}")) deps.add("curseforge:" + dep);
+                }
+                entry.put("deps", deps);
+                out.add(entry);
             }
         } else {
             for (Object o : l(getJson("https://api.github.com/repos/" + key + "/releases?per_page=100", ghHeaders(cfg, null)))) {
@@ -807,11 +936,12 @@ public class SkyLauncher {
         Map<String, Object> p = m(mr(cfg, "/project/" + enc(slug)));
         if (!"modpack".equals(s(p.get("project_type")))) throw new IOException("'" + slug + "' on Modrinth is a " + p.get("project_type") + ", not a modpack");
         Map<String, Object> v;
-        if (!version.isEmpty()) v = m(mr(cfg, "/project/" + p.get("id") + "/version/" + enc(version)));
-        else {
-            List<Object> vs = l(mr(cfg, "/project/" + p.get("id") + "/version")); if (vs.isEmpty()) throw new IOException("This modpack has no versions");
-            v = m(vs.get(0)); for (Object o : vs) if ("release".equals(s(m(o).get("version_type")))) { v = m(o); break; }
-        }
+        if (!version.isEmpty()) {
+            List<Object> vs = l(mr(cfg, "/project/" + p.get("id") + "/version"));
+            v = null;
+            for (Object o : vs) if (version.equals(s(m(o).get("id"))) || version.equals(s(m(o).get("version_number")))) { v = m(o); break; }
+            if (v == null) throw new IOException("Modrinth version not found: " + version);
+        } else v = latestModrinthPack(cfg, s(p.get("id")));
         Map<String, Object> f = null;
         for (Object o : l(v.get("files"))) if (b(m(o).get("primary")) || (f == null && s(m(o).get("filename")).endsWith(".mrpack"))) f = m(o);
         if (f == null) throw new IOException("That version has no .mrpack file");
@@ -851,8 +981,145 @@ public class SkyLauncher {
             } finally { Files.deleteIfExists(dl); }
         } finally { Files.deleteIfExists(tmp); }
         inst.put("pack_source", "modrinth"); inst.put("pack_repo", ""); inst.put("pack_ref", ""); inst.put("pack_sha", ""); inst.put("pack_skip_sha", "");
-        inst.put("pack_url", "https://modrinth.com/modpack/" + (p.get("slug") == null ? slug : p.get("slug"))); inst.put("pack_name", p.get("title")); inst.put("pack_version", v.get("version_number"));
+        inst.put("pack_url", "https://modrinth.com/modpack/" + (p.get("slug") == null ? slug : p.get("slug")));
+        inst.put("pack_id", s(p.get("id"))); inst.put("pack_version_id", s(v.get("id")));
+        inst.put("pack_name", p.get("title")); inst.put("pack_version", v.get("version_number"));
         log.log("Pack install complete.");
+    }
+
+
+    // CurseForge pack bytes and all referenced mods come through the user's own HTTPS VPS bridge.
+    // The developer API key is never handled by the client.
+    static Map<String, Object> latestCurseForgePack(Map<String, Object> cfg, String projectId) throws IOException {
+        if (!projectId.matches("[1-9][0-9]{0,12}")) throw new IOException("Invalid CurseForge pack ID");
+        List<Object> files = l(m(cf(cfg, "/v1/packs/" + projectId + "/files")).get("data"));
+        for (Object v : files) if (s(m(v).get("name")).toLowerCase(Locale.ROOT).endsWith(".zip")) return m(v);
+        throw new IOException("No downloadable .zip modpack was found on CurseForge");
+    }
+    static Map<String, Object> latestModrinthPack(Map<String, Object> cfg, String projectId) throws IOException {
+        List<Object> vs = l(mr(cfg, "/project/" + enc(projectId) + "/version"));
+        if (vs.isEmpty()) throw new IOException("Modrinth pack has no versions");
+        Map<String,Object> best = m(vs.get(0));
+        for (Object o : vs) if ("release".equals(s(m(o).get("version_type")))) { best = m(o); break; }
+        return best;
+    }
+    static void fetchBridgeFile(Map<String, Object> cfg, String projectId, String fileId,
+            Path dest, String sha1, long maxSize) throws IOException {
+        Files.createDirectories(dest.getParent());
+        Path part = dest.resolveSibling(dest.getFileName() + ".part");
+        long size = 0;
+        try (InputStream input = open("GET", cfDownloadUrl(cfg, projectId, fileId), cfHeaders(cfg), null).body();
+             OutputStream output = Files.newOutputStream(part)) {
+            byte[] buf = new byte[65536]; int read;
+            while ((read = input.read(buf)) != -1) {
+                size += read;
+                if (size > maxSize) throw new IOException("CurseForge file exceeds the size limit");
+                output.write(buf, 0, read);
+            }
+        } catch (IOException e) { Files.deleteIfExists(part); throw e; }
+        if (sha1 != null && !sha1.isBlank() && !fileDigest("SHA-1", part).equalsIgnoreCase(sha1)) {
+            Files.deleteIfExists(part); throw new IOException("CurseForge file failed SHA-1 integrity verification");
+        }
+        Files.move(part, dest, StandardCopyOption.REPLACE_EXISTING);
+    }
+    static void extractPackOverrides(ZipFile z, Path stage, String prefix, Log log) throws IOException {
+        long total = 0; int count = 0;
+        String root = prefix.endsWith("/") ? prefix : prefix + "/";
+        for (var entries = z.entries(); entries.hasMoreElements();) {
+            ZipEntry entry = entries.nextElement();
+            if (entry.isDirectory() || !entry.getName().startsWith(root)) continue;
+            String rel = entry.getName().substring(root.length());
+            if (rel.isBlank() || rel.startsWith("/")) continue;
+            Path dest = safeJoin(stage, rel); Files.createDirectories(dest.getParent());
+            if (++count > 5000) throw new IOException("Too many modpack override files");
+            try (InputStream in = z.getInputStream(entry); OutputStream out = Files.newOutputStream(dest)) {
+                byte[] buf = new byte[32768]; int len;
+                while ((len = in.read(buf)) != -1) {
+                    total += len;
+                    if (total > 512L * 1024 * 1024) throw new IOException("Modpack overrides exceed 512 MiB");
+                    out.write(buf, 0, len);
+                }
+            }
+        }
+        log.log("Extracted " + count + " modpack override files");
+    }
+    static void installCurseForgePack(Map<String, Object> cfg, String projectId,
+            Map<String, Object> inst, boolean clear, Log log) throws Exception {
+        Map<String,Object> project = m(cf(cfg, "/v1/packs/" + projectId));
+        Map<String,Object> file = latestCurseForgePack(cfg, projectId);
+        String fileId = s(file.get("id")), name = s(project.get("name"));
+        String sha1 = s(file.get("sha1"));
+        if (!fileId.matches("[1-9][0-9]{0,12}")) throw new IOException("No valid CurseForge modpack file ID");
+        Path work = Files.createTempDirectory("sky-cf-pack-");
+        try {
+            Path zipPath = work.resolve("pack.zip"), stage = work.resolve("payload");
+            Files.createDirectories(stage);
+            log.log("Downloading CurseForge pack " + name + " through the VPS...");
+            fetchBridgeFile(cfg, projectId, fileId, zipPath, sha1, 512L*1024*1024);
+            Map<String,Object> manifest;
+            String mc = "", loader = "", loaderVersion = "";
+            int downloaded = 0;
+            try (ZipFile z = new ZipFile(zipPath.toFile())) {
+                ZipEntry meta = z.getEntry("manifest.json");
+                if (meta == null || meta.getSize() > 4 * 1024 * 1024) throw new IOException("CurseForge zip has no valid manifest.json");
+                try (InputStream in = z.getInputStream(meta)) {
+                    byte[] bytes = in.readNBytes(4*1024*1024+1);
+                    if (bytes.length > 4*1024*1024) throw new IOException("CurseForge manifest is too large");
+                    manifest = m(Json.parse(new String(bytes, StandardCharsets.UTF_8)));
+                }
+                if (!"minecraftModpack".equals(s(manifest.get("manifestType"))))
+                    throw new IOException("Unsupported CurseForge pack manifest");
+                Map<String,Object> minecraft = m(manifest.get("minecraft"));
+                mc = s(minecraft.get("version"));
+                if (!mc.matches("[0-9]+(?:\\.[0-9A-Za-z_-]+){1,4}")) throw new IOException("Invalid pack Minecraft version");
+                for (Object value : l(minecraft.get("modLoaders"))) {
+                    String id = s(m(value).get("id"));
+                    for (String type : LOADERS) if (id.toLowerCase(Locale.ROOT).startsWith(type + "-")) {
+                        if (loader.isEmpty() || b(m(value).get("primary"))) {
+                            loader = type; loaderVersion = id.substring(type.length()+1);
+                        }
+                    }
+                }
+                if (loader.isEmpty()) throw new IOException("The pack requires an unsupported Minecraft loader");
+                List<Object> mods = l(manifest.get("files"));
+                if (mods.size() > 2000) throw new IOException("Pack contains too many mod entries");
+                for (Object value : mods) {
+                    Map<String,Object> entry = m(value);
+                    if (Boolean.FALSE.equals(entry.get("required"))) continue;
+                    String modId = s(entry.get("projectID")), modFileId = s(entry.get("fileID"));
+                    if (!modId.matches("[1-9][0-9]{0,12}") || !modFileId.matches("[1-9][0-9]{0,12}"))
+                        throw new IOException("Invalid project/file ID in CurseForge pack manifest");
+                    Map<String,Object> info = m(cf(cfg, "/v1/mods/" + modId + "/files/" + modFileId));
+                    String filename = s(info.get("name"));
+                    if (!filename.matches("[A-Za-z0-9][A-Za-z0-9_.+() -]{0,180}\\.jar"))
+                        throw new IOException("Invalid mod filename from CurseForge: " + filename);
+                    Path dest = safeJoin(stage, "mods/" + filename);
+                    fetchBridgeFile(cfg, modId, modFileId, dest, s(info.get("sha1")), 128L * 1024 * 1024);
+                    downloaded++;
+                    if (downloaded % 25 == 0) log.log("CurseForge mod files: " + downloaded + "/" + mods.size());
+                }
+                String overrides = s(manifest.get("overrides"));
+                if (overrides.isEmpty()) overrides = "overrides";
+                if (!overrides.matches("[A-Za-z0-9_-]{1,80}")) throw new IOException("Unsafe overrides folder name");
+                extractPackOverrides(z, stage, overrides, log);
+            }
+            Path gd = gameDir(inst); Files.createDirectories(gd);
+            if (clear) clearMods(gd, log);
+            try (var paths = Files.walk(stage)) {
+                for (Path src : (Iterable<Path>)paths::iterator) {
+                    if (Files.isDirectory(src)) continue;
+                    String rel = stage.relativize(src).toString();
+                    Path dest = safeJoin(gd, rel); Files.createDirectories(dest.getParent());
+                    Files.copy(src, dest, StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+            inst.put("mc_version", mc); inst.put("loader", loader); inst.put("loader_version", loaderVersion);
+            inst.put("pack_source", "curseforge"); inst.put("pack_id", projectId); inst.put("pack_file_id", fileId);
+            inst.put("pack_repo", ""); inst.put("pack_ref", ""); inst.put("pack_sha", ""); inst.put("pack_skip_sha", "");
+            inst.put("pack_name", name); inst.put("pack_version", s(file.get("name")));
+            inst.put("pack_url", "https://www.curseforge.com/minecraft/modpacks/" + s(project.get("slug")));
+            log.log("CurseForge pack ready: " + name + " (" + downloaded + " mods); requires " + mc + " " + loader);
+        } finally { deleteTree(work); }
     }
 
     // ============================================================ the app (Swing)
@@ -864,13 +1131,47 @@ public class SkyLauncher {
     volatile Map<String, Object> availableLauncherRelease; JButton launcherUpdateButton;
     JFrame frame; JComboBox<String> instBox; JLabel authLabel, packLabel, statusLabel; JTextArea logBox; JProgressBar progress;
     DefaultTableModel modModel, searchModel; JTable modTable, searchTable; JTextField addField, searchField, filterField;
-    final Map<String, JTextField> fields = new LinkedHashMap<>(); JCheckBox fullscreen; JTextField tokenF, mrTokenF, runtimeF, versionF;
-    JComboBox<String> loaderBox, launcherBox;
+    final Map<String, JTextField> fields = new LinkedHashMap<>(); JCheckBox fullscreen, useGenericRam;
+    JLabel effectiveRamLabel; JTextField tokenF, mrTokenF, runtimeF, versionF;
+    JComboBox<String> loaderBox, launcherBox; JComboBox<String> backgroundChoice, searchProviderBox;
+    JCheckBox onlyCompatibleSearch;
     final List<Map<String, Object>> searchHits = new ArrayList<>();
+    transient Image[] bundledBackgrounds; int selectedBackgroundIndex = 0;
+    JPanel backgroundRoot, screenRoot; JTabbedPane mainTabs; CardLayout screenLayout;
+    JComboBox<String> visualInstanceBox; JLabel visualProfileLabel;
+    boolean terminalStyleActive = false;
+    static volatile boolean VISUAL_GLASS = true;
 
     Map<String, Object> insts() { return m(cfg.get("instances")); }
     String active() { return s(cfg.get("active")); }
     Map<String, Object> inst() { return m(insts().get(active())); }
+    static final String[] BACKGROUND_LABELS = {"Cherry Blossoms", "Moonlit Ruins", "Castle Lake", "Sunset Forest"};
+    static final String[] BACKGROUND_RESOURCES = {"/background-1.jpg", "/background-2.jpg", "/background-3.jpg", "/background-4.jpg"};
+    void ensureBackgroundsLoaded() {
+        if (bundledBackgrounds != null) return;
+        bundledBackgrounds = new Image[BACKGROUND_RESOURCES.length];
+        for (int i = 0; i < BACKGROUND_RESOURCES.length; i++) {
+            try (InputStream in = SkyLauncher.class.getResourceAsStream(BACKGROUND_RESOURCES[i])) {
+                if (in != null) bundledBackgrounds[i] = ImageIO.read(in);
+            } catch (Exception e) { log("Background load failed: " + e.getMessage()); }
+        }
+        try { selectedBackgroundIndex = Math.max(0, Math.min(BACKGROUND_RESOURCES.length - 1, Integer.parseInt(s(cfg.getOrDefault("visual_background_index", "0"))))); }
+        catch (Exception ignored) { selectedBackgroundIndex = 0; }
+    }
+    void setSelectedBackgroundIndex(int index) {
+        ensureBackgroundsLoaded();
+        selectedBackgroundIndex = Math.max(0, Math.min(BACKGROUND_RESOURCES.length - 1, index));
+        cfg.put("visual_background_index", String.valueOf(selectedBackgroundIndex));
+        saveConfig(cfg);
+        if (backgroundChoice != null && backgroundChoice.getSelectedIndex() != selectedBackgroundIndex) backgroundChoice.setSelectedIndex(selectedBackgroundIndex);
+        if (backgroundRoot != null) { backgroundRoot.revalidate(); backgroundRoot.repaint(); }
+        if (screenRoot != null) { screenRoot.revalidate(); screenRoot.repaint(); }
+        if (frame != null) frame.repaint();
+    }
+    Image currentBackgroundImage() {
+        ensureBackgroundsLoaded();
+        return bundledBackgrounds != null && selectedBackgroundIndex >= 0 && selectedBackgroundIndex < bundledBackgrounds.length ? bundledBackgrounds[selectedBackgroundIndex] : null;
+    }
 
     public static void main(String[] args) throws Exception {
         if (args.length > 0 && args[0].equals("--selftest")) { selfTest(); return; }
@@ -1241,8 +1542,14 @@ public class SkyLauncher {
         @Override protected void paintComponent(Graphics g) {
             Graphics2D gg = (Graphics2D) g.create();
             gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            gg.setColor(SURFACE); gg.fillRoundRect(0,0,getWidth()-1,getHeight()-1,arc,arc);
-            if (line) { gg.setColor(outline()); gg.drawRoundRect(0,0,getWidth()-1,getHeight()-1,arc,arc); }
+            gg.setColor(new Color(SURFACE.getRed(), SURFACE.getGreen(), SURFACE.getBlue(), VISUAL_GLASS ? 64 : 235));
+            gg.fillRoundRect(0,0,getWidth()-1,getHeight()-1,arc,arc);
+            gg.setColor(new Color(0, 0, 0, 45));
+            gg.drawRoundRect(1,1,getWidth()-3,getHeight()-3,arc,arc);
+            if (line) {
+                gg.setColor(new Color(outline().getRed(), outline().getGreen(), outline().getBlue(), 190));
+                gg.drawRoundRect(0,0,getWidth()-1,getHeight()-1,arc,arc);
+            }
             gg.dispose(); super.paintComponent(g);
         }
     }
@@ -1252,8 +1559,8 @@ public class SkyLauncher {
         RoundedAction(String title, String role) {
             super(title); this.role = role;
             setFont(new Font("Dialog", role.equals("play") ? Font.BOLD : Font.PLAIN, role.equals("play") ? 15 : 12));
-            setBorder(BorderFactory.createEmptyBorder(7, 16, 7, 16));
-            setPreferredSize(new Dimension(role.equals("play") ? 118 : Math.max(78, title.length()*7+30), role.equals("play") ? 40 : 32));
+            setBorder(BorderFactory.createEmptyBorder(8, 18, 8, 18));
+            setPreferredSize(new Dimension(role.equals("play") ? 124 : Math.max(84, title.length()*7+34), role.equals("play") ? 42 : 34));
             setContentAreaFilled(false); setFocusPainted(false); setOpaque(false);
             setForeground(role.equals("accent") || role.equals("danger") || role.equals("play") ? Color.WHITE : FG);
             addMouseListener(new java.awt.event.MouseAdapter(){
@@ -1267,11 +1574,49 @@ public class SkyLauncher {
             Color shade = switch(role) {case "accent" -> ACCENT; case "danger" -> RED; case "play" -> GREEN; default -> SURFACE2;};
             if (hover && isEnabled()) shade = shade.brighter();
             if (!isEnabled()) shade=shade.darker();
-            gg.setColor(shade); gg.fillRoundRect(0,0,getWidth()-1,getHeight()-1,getHeight(),getHeight());
+            gg.setColor(shade); gg.fillRoundRect(0,0,getWidth()-1,getHeight()-1,24,24);
+            gg.setColor(new Color(255,255,255,40)); gg.drawRoundRect(0,0,getWidth()-1,getHeight()-1,24,24);
             gg.dispose();
             setForeground(contrast(shade));
             super.paintComponent(g);
         }
+    }
+    class BackgroundPanel extends JPanel {
+        boolean terminalAware;
+        BackgroundPanel(java.awt.LayoutManager layout) { this(layout, false); }
+        BackgroundPanel(java.awt.LayoutManager layout, boolean terminalAware) {
+            super(layout); this.terminalAware = terminalAware; setOpaque(true);
+        }
+        @Override protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            Graphics2D gg = (Graphics2D) g.create();
+            gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            gg.setColor(new Color(14,18,26)); gg.fillRect(0,0,getWidth(),getHeight());
+            if (terminalAware && terminalStyleActive) { gg.dispose(); return; }
+            Image art = currentBackgroundImage();
+            if (art != null) {
+                double scale = Math.max(getWidth() / (double) art.getWidth(null), getHeight() / (double) art.getHeight(null));
+                int w = (int) Math.ceil(art.getWidth(null) * scale);
+                int h = (int) Math.ceil(art.getHeight(null) * scale);
+                gg.drawImage(art, (getWidth()-w)/2, (getHeight()-h)/2, w, h, null);
+            }
+            gg.setColor(new Color(10, 14, 20, 52)); gg.fillRect(0,0,getWidth(),getHeight());
+            gg.dispose();
+        }
+    }
+    static class SmoothTabbedPaneUI extends BasicTabbedPaneUI {
+        @Override protected void installDefaults() { super.installDefaults(); tabAreaInsets = new Insets(10,8,0,8); selectedTabPadInsets = new Insets(0,0,0,0); }
+        @Override protected void paintContentBorder(Graphics g, int tabPlacement, int selectedIndex) { }
+        @Override protected void paintTabBackground(Graphics g, int tabPlacement, int tabIndex, int x, int y, int w, int h, boolean isSelected) {
+            Graphics2D gg=(Graphics2D)g.create(); gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON);
+            Color base = isSelected ? new Color(SURFACE.getRed(), SURFACE.getGreen(), SURFACE.getBlue(), VISUAL_GLASS ? 64 : 225) : new Color(SURFACE2.getRed(), SURFACE2.getGreen(), SURFACE2.getBlue(), VISUAL_GLASS ? 48 : 170);
+            gg.setColor(base); gg.fillRoundRect(x+1, y+2, w-3, h-3, 20, 20); gg.dispose();
+        }
+        @Override protected void paintTabBorder(Graphics g, int tabPlacement, int tabIndex, int x, int y, int w, int h, boolean isSelected) {
+            Graphics2D gg=(Graphics2D)g.create(); gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON);
+            gg.setColor(new Color(outline().getRed(), outline().getGreen(), outline().getBlue(), 180)); gg.drawRoundRect(x+1, y+2, w-3, h-3, 20, 20); gg.dispose();
+        }
+        @Override protected void paintFocusIndicator(Graphics g, int tabPlacement, Rectangle[] rects, int tabIndex, Rectangle iconRect, Rectangle textRect, boolean isSelected) { }
     }
     JPanel glassCard(java.awt.LayoutManager layout) {
         JPanel p = new RoundedSurface(layout, 22, true);
@@ -1294,7 +1639,9 @@ public class SkyLauncher {
     }
     static void styleScroll(JScrollPane scroll) {
         scroll.setBorder(BorderFactory.createLineBorder(outline()));
-        scroll.getViewport().setBackground(BG);
+        scroll.setOpaque(false);
+        scroll.getViewport().setOpaque(false);
+        scroll.getViewport().setBackground(new Color(0,0,0,0));
         scroll.getVerticalScrollBar().setUnitIncrement(18);
     }
     static void styleTable(JTable table) {
@@ -1303,8 +1650,8 @@ public class SkyLauncher {
     }
     JPanel makeActivityLog() {
         JPanel container = new JPanel(new BorderLayout(0, 7));
-        container.setBackground(BG); container.setBorder(BorderFactory.createEmptyBorder(8, 16, 8, 16));
-        JPanel title = new JPanel(new BorderLayout()); title.setBackground(BG);
+        container.setOpaque(false); container.setBorder(BorderFactory.createEmptyBorder(8, 16, 8, 16));
+        JPanel title = new JPanel(new BorderLayout()); title.setOpaque(false);
         title.add(smallHeading("RECENT ACTIVITY"), BorderLayout.WEST);
         title.add(btn("Clear", () -> logBox.setText("")), BorderLayout.EAST);
         container.add(title, BorderLayout.NORTH);
@@ -1312,13 +1659,15 @@ public class SkyLauncher {
         logBox.setBackground(SURFACE); logBox.setForeground(GREEN);
         logBox.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         logBox.setLineWrap(true); logBox.setBorder(BorderFactory.createEmptyBorder(10, 12, 10, 12));
-        JScrollPane scroll = new JScrollPane(logBox); styleScroll(scroll); container.add(scroll,BorderLayout.CENTER);
+        JScrollPane scroll = new JScrollPane(logBox); styleScroll(scroll);
+        JPanel card = glassCard(new BorderLayout());
+        card.add(scroll, BorderLayout.CENTER);
+        container.add(card,BorderLayout.CENTER);
         return container;
     }
     JPanel makeBottomBar() {
-        JPanel footer = new JPanel(new BorderLayout(10, 0));
-        footer.setBackground(SURFACE); footer.setBorder(BorderFactory.createCompoundBorder(
-            BorderFactory.createLineBorder(outline(),1,true), BorderFactory.createEmptyBorder(10,14,10,14)));
+        JPanel footer = new RoundedSurface(new BorderLayout(10, 0), 26, true);
+        footer.setBorder(BorderFactory.createEmptyBorder(10,14,10,14));
         progress = new JProgressBar(); progress.setPreferredSize(new Dimension(116, 12));
         progress.setStringPainted(false);
         statusLabel = new JLabel("Ready"); statusLabel.setForeground(MUTED);
@@ -1331,24 +1680,306 @@ public class SkyLauncher {
         footer.add(right,BorderLayout.EAST);
         return footer;
     }
+    // Native Swing UI: image backgrounds on every visual page; text backing is 25% opaque.
+    class TextGlass extends JPanel {
+        final int radius;
+        TextGlass(java.awt.LayoutManager layout, int radius) {
+            super(layout); this.radius=radius; setOpaque(false);
+        }
+        @Override protected void paintComponent(Graphics g) {
+            Graphics2D gg=(Graphics2D)g.create();
+            gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON);
+            gg.setColor(new Color(9,17,29,64)); // 75% transparent
+            gg.fillRoundRect(0,0,getWidth()-1,getHeight()-1,radius,radius);
+            gg.setColor(new Color(255,255,255,70));
+            gg.setStroke(new BasicStroke(1.5f));
+            gg.drawRoundRect(1,1,getWidth()-3,getHeight()-3,radius,radius);
+            gg.dispose(); super.paintComponent(g);
+        }
+    }
+    static class VisualAction extends JButton {
+        final boolean primary;
+        boolean hovering;
+        VisualAction(String label, boolean primary) {
+            super(label); this.primary=primary;
+            setFont(new Font("Dialog", Font.BOLD, primary ? 18 : 13));
+            setForeground(primary ? new Color(24,18,20) : Color.WHITE);
+            setOpaque(false); setContentAreaFilled(false); setBorderPainted(false); setFocusPainted(false);
+            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            setBorder(BorderFactory.createEmptyBorder(12,14,12,14));
+            setPreferredSize(new Dimension(primary ? 280 : 135, primary ? 56 : 44));
+            addMouseListener(new java.awt.event.MouseAdapter() {
+                public void mouseEntered(java.awt.event.MouseEvent e) { hovering=true; repaint(); }
+                public void mouseExited(java.awt.event.MouseEvent e) { hovering=false; repaint(); }
+            });
+        }
+        @Override protected void paintComponent(Graphics g) {
+            Graphics2D gg=(Graphics2D)g.create();
+            gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            Color fill=primary ? new Color(255,190,96,hovering ? 255 : 240)
+                : new Color(10,21,37,hovering ? 225 : 185);
+            gg.setColor(fill); gg.fillRoundRect(1,1,getWidth()-2,getHeight()-2,24,24);
+            gg.setColor(new Color(255,255,255,primary ? 115 : 90));
+            gg.setStroke(new BasicStroke(1.4f)); gg.drawRoundRect(1,1,getWidth()-3,getHeight()-3,24,24);
+            gg.dispose(); super.paintComponent(g);
+        }
+    }
+    JButton visualButton(String name, boolean primary, Runnable handler) {
+        JButton b=new VisualAction(name,primary);
+        b.addActionListener(e -> handler.run());
+        return b;
+    }
+    JLabel visualText(String text, int size, boolean bold) {
+        JLabel label = new JLabel(text);
+        label.setFont(new Font("Dialog", bold ? Font.BOLD : Font.PLAIN, size));
+        label.setForeground(Color.WHITE);
+        label.setHorizontalAlignment(SwingConstants.CENTER);
+        label.setAlignmentX(Component.CENTER_ALIGNMENT);
+        return label;
+    }
+    JPanel visualNav() {
+        TextGlass nav = new TextGlass(new GridLayout(2,5,8,8),24);
+        nav.setBorder(BorderFactory.createEmptyBorder(10,14,10,14));
+        String[] items={"Home","Servers","News","Packs","Instances","Skin","Settings","Social","About"};
+        for (String item : items) nav.add(visualButton(item,false,()->showVisualPage(item)));
+        return nav;
+    }
+    JPanel visualPage(String title, String subtitle, JPanel centerContent) {
+        BackgroundPanel page=new BackgroundPanel(new BorderLayout(16,16));
+        page.setBorder(BorderFactory.createEmptyBorder(16,24,18,24));
+        JPanel header=new JPanel(new BorderLayout(0,12));header.setOpaque(false);
+        header.add(visualNav(),BorderLayout.CENTER);
+        page.add(header,BorderLayout.NORTH);
+        JPanel center=new JPanel(new GridBagLayout());center.setOpaque(false);
+        TextGlass glass=new TextGlass(new BorderLayout(0,18),34);
+        glass.setBorder(BorderFactory.createEmptyBorder(25,32,25,32));
+        JPanel labels=new JPanel(new GridLayout(0,1,0,9));labels.setOpaque(false);
+        labels.add(visualText(title,32,true));
+        if (!subtitle.isEmpty())labels.add(visualText(subtitle,15,false));
+        glass.add(labels,BorderLayout.NORTH);
+        if (centerContent!=null)glass.add(centerContent,BorderLayout.CENTER);
+        center.add(glass);
+        page.add(center,BorderLayout.CENTER);
+        JPanel footer=new JPanel(new FlowLayout(FlowLayout.CENTER,12,4));footer.setOpaque(false);
+        footer.add(visualButton("Home",false,()->showVisualPage("Home")));
+        footer.add(visualButton("Tools & Logs",false,()->showWorkspace(0,false)));
+        page.add(footer,BorderLayout.SOUTH);
+        return page;
+    }
+    JPanel actionsGrid(String[] names, Runnable[] callbacks) {
+        JPanel grid=new JPanel(new GridLayout(0,2,16,16)); grid.setOpaque(false);
+        grid.setPreferredSize(new Dimension(630, Math.max(1,(names.length+1)/2)*58+Math.max(0,(names.length-1)/2)*16));
+        for (int i=0;i<names.length;i++)grid.add(visualButton(names[i],false,callbacks[i]));
+        if (names.length%2==1)grid.add(new JLabel(""));
+        return grid;
+    }
+    JPanel wallpaperChooser() {
+        JPanel panel=new JPanel(new FlowLayout(FlowLayout.CENTER,10,5));panel.setOpaque(false);
+        JLabel label=visualText("Background:",14,true);panel.add(label);
+        JComboBox<String> choice=new JComboBox<>(BACKGROUND_LABELS);
+        choice.setSelectedIndex(selectedBackgroundIndex);
+        choice.addActionListener(e->{if(choice.getSelectedIndex()>=0)setSelectedBackgroundIndex(choice.getSelectedIndex());});
+        panel.add(choice);
+        return panel;
+    }
+    void createVisualPages() {
+        JPanel homeCenter=new JPanel();homeCenter.setOpaque(false);
+        homeCenter.setLayout(new BoxLayout(homeCenter,BoxLayout.Y_AXIS));
+        visualProfileLabel=visualText("Selected profile: "+active(),16,false);
+        homeCenter.add(visualProfileLabel);homeCenter.add(Box.createVerticalStrut(24));
+        JButton play=visualButton("PLAY MINECRAFT",true,this::play);
+        play.setAlignmentX(Component.CENTER_ALIGNMENT);play.setMaximumSize(new Dimension(360,58));
+        homeCenter.add(play);homeCenter.add(Box.createVerticalStrut(14));
+        JButton instances=visualButton("Manage Instances",false,()->showVisualPage("Instances"));
+        instances.setAlignmentX(Component.CENTER_ALIGNMENT);instances.setMaximumSize(new Dimension(360,48));
+        homeCenter.add(instances);homeCenter.add(Box.createVerticalStrut(14));
+        JButton login=visualButton("Microsoft Sign In",false,this::login);
+        login.setAlignmentX(Component.CENTER_ALIGNMENT);login.setMaximumSize(new Dimension(360,48));
+        homeCenter.add(login);homeCenter.add(Box.createVerticalStrut(20));
+        homeCenter.add(wallpaperChooser());
+        screenRoot.add(visualPage("SKYLAUNCHER", "BY FATHOM STUDIOS  |  v3.1.3",homeCenter),"Home");
+
+        screenRoot.add(visualPage("SERVERS", "Launch Minecraft and join your multiplayer servers",
+            actionsGrid(new String[]{"Play Minecraft", "Choose Instance", "Game Settings", "Open Game Folder"},
+                new Runnable[]{this::play,()->showVisualPage("Instances"),()->showWorkspace(1,false),this::openFolder})),"Servers");
+        screenRoot.add(visualPage("NEWS", "Minecraft and Fathom Studios",
+            actionsGrid(new String[]{"Minecraft News", "Fathom Studios", "SkyLauncher Project", "Back Home"},
+                new Runnable[]{()->openVisualUrl("https://www.minecraft.net/en-us/articles"),
+                    ()->openVisualUrl("https://fathomstudios.org"),
+                    ()->openVisualUrl("https://skylauncher.fathomstudios.org"),
+                    ()->showVisualPage("Home")})),"News");
+        screenRoot.add(visualPage("PACKS", "Manage modpacks and installed mods",
+            actionsGrid(new String[]{"Mod Manager", "Install Fathom Pack", "Install Pack from Link", "Check All Pack Updates", "Search Modpacks", "Check Active Pack"},
+                new Runnable[]{()->showWorkspace(0,false),this::installFathom,this::installPackDialog,this::checkAllPackUpdates,this::searchModpacks,this::checkPackUpdate})),"Packs");
+
+        JPanel instanceContent=new JPanel();instanceContent.setOpaque(false);
+        instanceContent.setLayout(new BoxLayout(instanceContent,BoxLayout.Y_AXIS));
+        visualInstanceBox=new JComboBox<>();
+        for(String k:insts().keySet())visualInstanceBox.addItem(k);
+        visualInstanceBox.setSelectedItem(active());
+        visualInstanceBox.setMaximumSize(new Dimension(350,40));
+        visualInstanceBox.setAlignmentX(Component.CENTER_ALIGNMENT);
+        visualInstanceBox.addActionListener(e->{
+            String selected=(String)visualInstanceBox.getSelectedItem();
+            if(!loading && selected!=null && !selected.equals(active()))selectInstance(selected);
+        });
+        instanceContent.add(visualText("Choose active Minecraft instance",15,true));
+        instanceContent.add(Box.createVerticalStrut(12));instanceContent.add(visualInstanceBox);
+        instanceContent.add(Box.createVerticalStrut(20));
+        instanceContent.add(actionsGrid(new String[]{"New Instance", "Delete Instance", "Open Instance Folder", "Instance Settings"},
+            new Runnable[]{this::newInstance,this::deleteInstance,this::openFolder,()->showWorkspace(1,false)}));
+        screenRoot.add(visualPage("INSTANCES", "Create and manage separate Minecraft profiles",instanceContent),"Instances");
+
+        screenRoot.add(visualPage("SKIN", "Manage your Minecraft character skin",
+            actionsGrid(new String[]{"Open Minecraft Skin Editor", "Microsoft Sign In", "Game Profiles", "Home"},
+                new Runnable[]{()->openVisualUrl("https://www.minecraft.net/msaprofile/mygames/editskin"),this::login,
+                    ()->showVisualPage("Instances"),()->showVisualPage("Home")})),"Skin");
+
+        JPanel settingsContent=new JPanel();settingsContent.setOpaque(false);
+        settingsContent.setLayout(new BoxLayout(settingsContent,BoxLayout.Y_AXIS));
+        settingsContent.add(wallpaperChooser()); settingsContent.add(Box.createVerticalStrut(12));
+        settingsContent.add(visualText("GENERAL SETTINGS",15,true));
+        settingsContent.add(Box.createVerticalStrut(9));
+        settingsContent.add(actionsGrid(new String[]{"Generic Modpack Settings", "CurseForge VPS Bridge", "Minecraft Settings", "Manage Instances", "Mods & Logs", "Search Mods"},
+            new Runnable[]{this::showGenericModpackSettings,this::showCurseForgeBridgeSettings,
+                ()->showWorkspace(1,false),()->showVisualPage("Instances"),
+                ()->showWorkspace(0,false),()->showWorkspace(0,false)}));
+        settingsContent.add(Box.createVerticalStrut(18));
+        settingsContent.add(visualText("INTERFACE STYLE (SEPARATE FROM GAME SETTINGS)",15,true));
+        settingsContent.add(Box.createVerticalStrut(8));
+        settingsContent.add(actionsGrid(new String[]{"Visual Style", "Terminal Style"},
+            new Runnable[]{()->showVisualPage("Home"),()->showWorkspace(1,true)}));
+        screenRoot.add(visualPage("SETTINGS", "Change your wallpaper, generic pack defaults, or interface style",settingsContent),"Settings");
+
+        screenRoot.add(visualPage("SOCIAL PLATFORMS", "Find and support Fathom Studios",
+            actionsGrid(new String[]{"Fathom Studios Website", "Support on Patreon", "SkyLauncher Source", "SkyLauncher Website"},
+                new Runnable[]{()->openVisualUrl("https://fathomstudios.org"),
+                    ()->openVisualUrl("https://patreon.com/FathomStudios"),
+                    ()->openVisualUrl("https://github.com/Newguygame/skylauncher"),
+                    ()->openVisualUrl("https://skylauncher.fathomstudios.org")})),"Social");
+
+        screenRoot.add(visualPage("ABOUT", "SkyLauncher 3.1.3  •  Fathom Studios",
+            actionsGrid(new String[]{"Source on GitHub", "Check Updates", "System & Game Settings", "Style Settings"},
+                new Runnable[]{()->openVisualUrl("https://github.com/Newguygame/skylauncher"),
+                    this::checkLauncherUpdate,()->showWorkspace(1,false),()->showVisualPage("Settings")})),"About");
+    }
+    void showCurseForgeBridgeSettings() {
+        JTextField address = new JTextField(cfConfiguredUrl(cfg), 36);
+        JPanel form = new JPanel(new GridBagLayout());
+        GridBagConstraints c = new GridBagConstraints();
+        c.insets = new Insets(8,8,8,8); c.anchor = GridBagConstraints.WEST;
+        c.gridx=0; c.gridy=0; form.add(new JLabel("Public CurseForge VPS (HTTPS)"),c);
+        c.gridx=1; c.fill=GridBagConstraints.HORIZONTAL; c.weightx=1; form.add(address,c);
+        c.gridy++; c.gridx=0; c.gridwidth=2;
+        form.add(new JLabel("No user token is necessary; the developer API key remains on the VPS."),c);
+        c.gridy++; form.add(new JLabel("VPS identity is checked using its bundled TLS certificate."),c);
+        int choice=JOptionPane.showConfirmDialog(frame,form,"CurseForge VPS Bridge",JOptionPane.OK_CANCEL_OPTION,JOptionPane.PLAIN_MESSAGE);
+        if(choice!=JOptionPane.OK_OPTION)return;
+        try {
+            String base=validatedCfAddress(address.getText().trim());
+            cfg.put("curseforge_bridge_url",base);
+            cfg.remove("curseforge_bridge_token");
+            saveConfig(cfg);
+            log("Public CurseForge VPS set to " + base);
+            async("CurseForge VPS connection", () -> {
+                Map<String,Object> result=m(cf(cfg,"/v1/search?q=minecraft"));
+                int found=l(result.get("data")).size();
+                log("Public CurseForge VPS connected ("+found+" results).");
+                SwingUtilities.invokeLater(()->JOptionPane.showMessageDialog(frame,"Connected to the public CurseForge VPS.","CurseForge",JOptionPane.INFORMATION_MESSAGE));
+            });
+        } catch(IOException e) {
+            JOptionPane.showMessageDialog(frame,e.getMessage(),"Invalid VPS settings",JOptionPane.ERROR_MESSAGE);
+        }
+    }
+    void showGenericModpackSettings() {
+        int current = validRamMb(cfg.get("generic_memory_mb"), 4096);
+        JSpinner memoryGb = new JSpinner(new SpinnerNumberModel(current / 1024.0, 0.5, 256.0, 0.5));
+        JSpinner.NumberEditor editor = new JSpinner.NumberEditor(memoryGb, "0.0");
+        memoryGb.setEditor(editor);
+        JTextField commonJvm = new JTextField(s(cfg.get("generic_jvm_args")), 28);
+        JPanel form = new JPanel(new GridBagLayout());
+        GridBagConstraints c = new GridBagConstraints();
+        c.insets = new Insets(9, 9, 9, 9); c.anchor = GridBagConstraints.WEST;
+        c.gridx = 0; c.gridy = 0; form.add(new JLabel("Default RAM for all packs (GB)"), c);
+        c.gridx = 1; c.fill = GridBagConstraints.HORIZONTAL; form.add(memoryGb, c);
+        c.gridx = 0; c.gridy = 1; c.fill = GridBagConstraints.NONE;
+        form.add(new JLabel("Default JVM arguments (optional)"), c);
+        c.gridx = 1; c.fill = GridBagConstraints.HORIZONTAL; form.add(commonJvm, c);
+        c.gridx = 0; c.gridy = 2; c.gridwidth = 2;
+        form.add(new JLabel("Packs inherit these defaults unless their own settings override them."), c);
+        int result = JOptionPane.showConfirmDialog(frame, form, "Generic Modpack Settings",
+            JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (result != JOptionPane.OK_OPTION) return;
+        try {
+            memoryGb.commitEdit();
+            int newRam = (int) Math.round(((Number)memoryGb.getValue()).doubleValue() * 1024);
+            if (newRam < 512 || newRam > 262144) throw new IllegalArgumentException("RAM must be between 0.5 and 256 GB.");
+            // Check JVM argument syntax before writing the shared setting.
+            shlex(commonJvm.getText().trim());
+            cfg.put("generic_memory_mb", String.valueOf(newRam));
+            cfg.put("generic_jvm_args", commonJvm.getText().trim());
+            saveConfig(cfg);
+            updateRamControls();
+            log("Generic modpack defaults updated: " + newRam + " MB RAM.");
+            JOptionPane.showMessageDialog(frame, "Generic defaults saved. Inherited packs now use "
+                + (newRam / 1024.0) + " GB RAM. Pack-specific overrides are unchanged.");
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(frame, "Invalid generic setting: " + e.getMessage(),
+                "Settings", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+    void updateRamControls() {
+        if (useGenericRam != null) {
+            JTextField override = fields.get("memory_mb");
+            if (override != null) override.setEnabled(!useGenericRam.isSelected());
+        }
+        if (effectiveRamLabel != null && !inst().isEmpty()) {
+            int mb = effectiveMemoryMb(cfg, inst());
+            effectiveRamLabel.setText(String.format(Locale.ROOT, "Effective RAM: %.1f GB (%s)",
+                mb / 1024.0, b(inst().get("memory_inherit")) ? "generic" : "pack override"));
+        }
+    }
+
+    void openVisualUrl(String url) {
+        try { Desktop.getDesktop().browse(URI.create(url)); }
+        catch (Exception e) { JOptionPane.showMessageDialog(frame,"Unable to open: "+url+"\n"+e.getMessage()); }
+    }
+    void showVisualPage(String page) {
+        terminalStyleActive=false; VISUAL_GLASS=true;
+        cfg.put("fathom_ui_style","visual");saveConfig(cfg);
+        screenLayout.show(screenRoot,page);screenRoot.repaint();
+    }
+    void showWorkspace(int tab, boolean terminal) {
+        terminalStyleActive=terminal; VISUAL_GLASS=!terminal;
+        cfg.put("fathom_ui_style",terminal?"terminal":"visual");saveConfig(cfg);
+        mainTabs.setSelectedIndex(tab);
+        screenLayout.show(screenRoot,"workspace");
+        screenRoot.repaint();
+    }
+
     void build() {
         setShade(s(cfg.getOrDefault("ui_shade_preset", "Black")), s(cfg.get("ui_accent_hex")),
             s(cfg.get("ui_background_hex")), s(cfg.get("ui_text_hex")));
-        applyPythonTheme();
+        applyPythonTheme(); ensureBackgroundsLoaded();
         frame = new JFrame("SkyLauncher " + VERSION);
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setMinimumSize(new Dimension(940, 620)); frame.setSize(1360, 760);
-        frame.getContentPane().setBackground(BG);
         java.awt.Image iconImage = appIcon(); if (iconImage != null) frame.setIconImage(iconImage);
+        backgroundRoot = new BackgroundPanel(new BorderLayout(), true);
 
-        JPanel header = new RoundedSurface(new BorderLayout(12, 0), 25, true);
-        header.setBorder(BorderFactory.createEmptyBorder(9, 20, 9, 20));
+        JPanel header = new RoundedSurface(new BorderLayout(12, 0), 30, true);
+        header.setBorder(BorderFactory.createEmptyBorder(10, 22, 10, 22));
         JLabel brand = new JLabel("SkyLauncher"); brand.setFont(new Font("Dialog", Font.BOLD, 23));
         brand.setForeground(FG);
         JPanel brandStack = new JPanel(new FlowLayout(FlowLayout.LEFT, 3, 0)); brandStack.setOpaque(false);
         brandStack.add(brand);
         JLabel versionLabel = new JLabel("v"+VERSION); versionLabel.setForeground(MUTED); versionLabel.setFont(new Font("Dialog",Font.PLAIN,11));
         brandStack.add(versionLabel); header.add(brandStack,BorderLayout.WEST);
+        JPanel workspaceNav = new JPanel(new FlowLayout(FlowLayout.CENTER, 6, 0)); workspaceNav.setOpaque(false);
+        workspaceNav.add(btn("← Visual Home", () -> showVisualPage("Home")));
+        workspaceNav.add(btn("Wallpaper tabs", () -> showWorkspace(mainTabs.getSelectedIndex(), false)));
+        workspaceNav.add(btn("Terminal style", () -> showWorkspace(mainTabs.getSelectedIndex(), true)));
+        header.add(workspaceNav, BorderLayout.CENTER);
         JPanel account = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 0)); account.setOpaque(false);
         authLabel = new JLabel(); authLabel.setForeground(MUTED); account.add(authLabel);
         launcherUpdateButton = actionButton("Update launcher", this::offerLauncherUpdate, ACCENT);
@@ -1357,31 +1988,39 @@ public class SkyLauncher {
         account.add(btn("Log out", () -> { cfg.put("account", null); saveConfig(cfg); updateAuth(); log("Logged out."); }));
         header.add(account, BorderLayout.EAST);
 
-        JPanel profile = new JPanel(new FlowLayout(FlowLayout.LEFT, 13, 7)); profile.setBackground(BG);
+        JPanel profile = new RoundedSurface(new FlowLayout(FlowLayout.LEFT, 13, 8), 26, true);
+        profile.setBorder(BorderFactory.createEmptyBorder(5, 12, 5, 12));
         profile.add(smallHeading("PROFILE"));
         instBox = new JComboBox<>(); instBox.setPrototypeDisplayValue("xxxxxxxxxxxxxxxxxxxxxxxx");
         instBox.setPreferredSize(new Dimension(228, 32)); profile.add(instBox);
         instBox.addActionListener(e -> { if (!loading && instBox.getSelectedItem() != null) selectInstance((String) instBox.getSelectedItem()); });
         profile.add(btn("New profile", this::newInstance)); profile.add(btn("Open folder", this::openFolder));
         profile.add(actionButton("Delete", this::deleteInstance, RED));
-        JPanel top = new JPanel(new BorderLayout(0, 6)); top.setBackground(BG);
+        JPanel top = new JPanel(new BorderLayout(0, 8)); top.setOpaque(false);
         top.setBorder(BorderFactory.createEmptyBorder(10, 11, 0, 11));
         top.add(header,BorderLayout.NORTH); top.add(profile,BorderLayout.SOUTH);
 
-        JTabbedPane tabs = new JTabbedPane(); tabs.setBackground(BG);
-        tabs.addTab("Mods",modsTab()); tabs.addTab("Settings",settingsTab());
-        tabs.setFont(new Font("Dialog",Font.PLAIN,12));
+        mainTabs = new JTabbedPane(); mainTabs.setOpaque(false); mainTabs.setBackground(new Color(0,0,0,0));
+        mainTabs.setUI(new SmoothTabbedPaneUI());
+        mainTabs.addTab("Mods",modsTab()); mainTabs.addTab("Settings",settingsTab());
+        mainTabs.setFont(new Font("Dialog",Font.PLAIN,12));
         JPanel activity = makeActivityLog();
-        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT,tabs,activity);
-        split.setBorder(null); split.setResizeWeight(.62); split.setDividerSize(5);
+        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT,mainTabs,activity);
+        split.setOpaque(false); split.setBorder(null); split.setResizeWeight(.62); split.setDividerSize(5);
         split.setContinuousLayout(true);
-        JPanel footerHolder = new JPanel(new BorderLayout()); footerHolder.setBackground(BG);
+        JPanel footerHolder = new JPanel(new BorderLayout()); footerHolder.setOpaque(false);
         footerHolder.setBorder(BorderFactory.createEmptyBorder(6,11,10,11));
         footerHolder.add(makeBottomBar(),BorderLayout.CENTER);
-        frame.add(top, BorderLayout.NORTH); frame.add(split,BorderLayout.CENTER);
-        frame.add(footerHolder,BorderLayout.SOUTH);
+        backgroundRoot.add(top, BorderLayout.NORTH); backgroundRoot.add(split,BorderLayout.CENTER);
+        backgroundRoot.add(footerHolder,BorderLayout.SOUTH);
+        screenLayout = new CardLayout(); screenRoot = new JPanel(screenLayout);
+        screenRoot.add(backgroundRoot, "workspace");
+        createVisualPages();
+        frame.setContentPane(screenRoot);
         frame.setLocationRelativeTo(null); frame.setVisible(true);
         selectInstance(active());
+        if ("terminal".equals(s(cfg.get("fathom_ui_style")))) showWorkspace(0, true);
+        else showVisualPage("Home");
         if (!PREVIEW_MODE) { checkLauncherUpdate(); SwingUtilities.invokeLater(this::askDesktopShortcut); }
     }
     // Default upstream matches the Python launcher; allow user overrides.
@@ -1444,7 +2083,7 @@ public class SkyLauncher {
     }
 
     JPanel modsTab() {
-        JPanel content = new JPanel(); content.setBackground(BG);
+        JPanel content = new JPanel(); content.setOpaque(false);
         content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
         content.setBorder(BorderFactory.createEmptyBorder(12,12,12,12));
 
@@ -1459,7 +2098,9 @@ public class SkyLauncher {
         JPanel packActions = paddedRow(14);
         packActions.add(btn("Install Fathom pack", this::installFathom));
         packActions.add(btn("Install modpack from link",this::installPackDialog));
-        packActions.add(btn("Check for updates", this::checkPackUpdate));
+        packActions.add(btn("Check active pack", this::checkPackUpdate));
+        packActions.add(btn("Update all packs", this::checkAllPackUpdates));
+        packActions.add(btn("Search modpacks", this::searchModpacks));
         packActions.add(btn("Reinstall modpack",this::reinstallPack));
         packActions.setAlignmentX(Component.LEFT_ALIGNMENT); packBody.add(packActions);
         packCard.add(packBody,BorderLayout.CENTER);
@@ -1474,13 +2115,28 @@ public class SkyLauncher {
         addInput.add(addField,BorderLayout.CENTER);
         addInput.add(actionButton("Add mod",this::addMod,ACCENT),BorderLayout.EAST);
         addCard.add(addInput,BorderLayout.CENTER);
-        JLabel tip = new JLabel("GitHub owner/name or URL   ·   Modrinth link   ·   modrinth:slug   ·   direct .jar URL");
+        JLabel tip = new JLabel("GitHub URL  ·  Modrinth link  ·  CurseForge mod URL  ·  curseforge:123456  ·  direct .jar URL");
         tip.setForeground(MUTED); tip.setFont(new Font("Dialog",Font.PLAIN,12));
         addCard.add(tip,BorderLayout.SOUTH);
         content.add(addCard); content.add(Box.createVerticalStrut(12));
 
         JPanel searchCard = glassCard(new BorderLayout(0,10)); searchCard.setAlignmentX(Component.LEFT_ALIGNMENT);
-        searchCard.add(smallHeading("SEARCH MODRINTH"),BorderLayout.NORTH);
+        JPanel searchHeading = new JPanel(new FlowLayout(FlowLayout.LEFT,14,0)); searchHeading.setOpaque(false);
+        searchHeading.add(smallHeading("SEARCH MODS"));
+        searchProviderBox = new JComboBox<>(new String[]{"Modrinth", "CurseForge (VPS)"});
+        searchProviderBox.setSelectedItem(s(cfg.getOrDefault("mod_search_provider", "Modrinth")));
+        searchProviderBox.addActionListener(e -> { cfg.put("mod_search_provider",searchProviderBox.getSelectedItem()); saveConfig(cfg); });
+        searchHeading.add(searchProviderBox);
+        onlyCompatibleSearch = new JCheckBox("Only compatible with this profile");
+        onlyCompatibleSearch.setOpaque(false);
+        onlyCompatibleSearch.setForeground(FG);
+        onlyCompatibleSearch.setSelected(!Boolean.FALSE.equals(cfg.get("compatible_mod_filter")));
+        onlyCompatibleSearch.addActionListener(e -> {
+            cfg.put("compatible_mod_filter", onlyCompatibleSearch.isSelected()); saveConfig(cfg);
+        });
+        searchHeading.add(onlyCompatibleSearch);
+        searchHeading.add(btn("VPS",this::showCurseForgeBridgeSettings));
+        searchCard.add(searchHeading,BorderLayout.NORTH);
         JPanel searchBody = new JPanel(new BorderLayout(8,9)); searchBody.setOpaque(false);
         JPanel query = new JPanel(new BorderLayout(12,0)); query.setOpaque(false);
         searchField = new JTextField(); searchField.setPreferredSize(new Dimension(120,33)); searchField.addActionListener(e -> search());
@@ -1512,15 +2168,17 @@ public class SkyLauncher {
         ops.add(btn("Remove selected",this::removeSelected)); tracker.add(ops,BorderLayout.SOUTH);
         installedCard.add(tracker,BorderLayout.CENTER); content.add(installedCard);
         JScrollPane outer = new JScrollPane(content,ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-        outer.setBorder(null); outer.getViewport().setBackground(BG); outer.getVerticalScrollBar().setUnitIncrement(22);
-        JPanel wrapper=new JPanel(new BorderLayout()); wrapper.setBackground(BG); wrapper.add(outer,BorderLayout.CENTER);
+        outer.setBorder(null); outer.setOpaque(false); outer.getViewport().setOpaque(false);
+        outer.getViewport().setBackground(new Color(0,0,0,0));
+        outer.getVerticalScrollBar().setUnitIncrement(22);
+        JPanel wrapper=new JPanel(new BorderLayout()); wrapper.setOpaque(false); wrapper.add(outer,BorderLayout.CENTER);
         return wrapper;
     }
     // Modpack actions are intentionally on the Mods tab to match the Python launcher.
     /** Settings keep common choices visible; expert options are in a separate dialog. */
     JPanel settingsTab() {
         JPanel page = new JPanel();
-        page.setBackground(BG);
+        page.setOpaque(false);
         page.setLayout(new BoxLayout(page, BoxLayout.Y_AXIS));
         page.setBorder(BorderFactory.createEmptyBorder(14, 16, 16, 16));
 
@@ -1547,12 +2205,42 @@ public class SkyLauncher {
         loaderBox = new JComboBox<>(LOADERS); loaderBox.addActionListener(e -> saveSettings());
         loaderBox.setToolTipText("Choose NeoForge, Forge, Fabric or Quilt to match your mods.");
         gameForm.add(loaderBox, c); c.gridy++;
-        addSettingsField(gameForm, c, "RAM (MB)", "memory_mb",
-            "4096 MB = 4 GB. Only change this if Minecraft needs more or less memory.");
-        addSettingsField(gameForm, c, "Extra JVM arguments", "jvm_args",
-            "Optional Java options, for example -XX:+UseG1GC. Leave blank unless needed.");
+        c.gridx = 0; c.weightx = 0; c.fill = GridBagConstraints.NONE;
+        gameForm.add(new JLabel("RAM policy"), c);
+        c.gridx = 1; c.weightx = 1; c.fill = GridBagConstraints.HORIZONTAL;
+        useGenericRam = new JCheckBox("Use generic RAM (otherwise override below)");
+        useGenericRam.setOpaque(false);
+        useGenericRam.addActionListener(e -> {
+            if (loading) return;
+            if (!useGenericRam.isSelected()) {
+                JTextField override = fields.get("memory_mb");
+                if (override != null && b(inst().get("memory_inherit"))) {
+                    loading = true; override.setText(String.valueOf(effectiveMemoryMb(cfg, inst()))); loading = false;
+                }
+            }
+            saveSettings(); updateRamControls();
+        });
+        gameForm.add(useGenericRam,c); c.gridy++;
+        addSettingsField(gameForm, c, "Pack RAM override (MB)", "memory_mb",
+            "Only used if generic RAM is unchecked. Example: 8192 MB = 8 GB.");
+        c.gridx = 1; c.weightx = 1; c.fill = GridBagConstraints.HORIZONTAL;
+        effectiveRamLabel = new JLabel("Effective RAM: from generic settings");
+        gameForm.add(effectiveRamLabel,c); c.gridy++;
+        addSettingsField(gameForm, c, "Pack JVM arguments (optional)", "jvm_args",
+            "Leave blank to inherit generic JVM arguments; otherwise this pack overrides them.");
         gameCard.add(gameForm, BorderLayout.CENTER);
         page.add(gameCard); page.add(Box.createVerticalStrut(12));
+
+        JPanel genericCard = glassCard(new BorderLayout(0, 8));
+        genericCard.setAlignmentX(Component.LEFT_ALIGNMENT);
+        genericCard.add(smallHeading("GENERIC MODPACK SETTINGS"), BorderLayout.NORTH);
+        JPanel genericButtons = paddedRow(12);
+        genericButtons.add(btn("Edit generic RAM and JVM defaults...", this::showGenericModpackSettings));
+        genericButtons.add(btn("CurseForge VPS Bridge...", this::showCurseForgeBridgeSettings));
+        genericCard.add(genericButtons,BorderLayout.CENTER);
+        JLabel genericExplanation = new JLabel("Shared by all packs unless a pack uses its own override.");
+        genericCard.add(genericExplanation,BorderLayout.SOUTH);
+        page.add(genericCard); page.add(Box.createVerticalStrut(12));
 
         JPanel appearanceCard = glassCard(new BorderLayout(0, 12));
         appearanceCard.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -1578,8 +2266,26 @@ public class SkyLauncher {
         addColorPicker(appearance, a, "Background color", backgroundHex, "Background", () -> BG, applyColors);
         addColorPicker(appearance, a, "Text color", textHex, "Text", () -> FG, applyColors);
         addColorPicker(appearance, a, "Accent color", accentHex, "Accent", () -> ACCENT, applyColors);
+        a.gridx = 0; a.weightx = 0; a.fill = GridBagConstraints.NONE;
+        appearance.add(new JLabel("Wallpaper"), a);
+        a.gridx = 1; a.weightx = 1; a.fill = GridBagConstraints.HORIZONTAL;
+        JPanel wallpaperControls = new JPanel(new FlowLayout(FlowLayout.LEFT, 7, 0)); wallpaperControls.setOpaque(false);
+        backgroundChoice = new JComboBox<>(BACKGROUND_LABELS); backgroundChoice.setSelectedIndex(selectedBackgroundIndex);
+        backgroundChoice.addActionListener(e -> { if (backgroundChoice.getSelectedIndex() >= 0) setSelectedBackgroundIndex(backgroundChoice.getSelectedIndex()); });
+        wallpaperControls.add(backgroundChoice);
+        wallpaperControls.add(btn("Apply to all tabs", () -> { if (backgroundChoice.getSelectedIndex() >= 0) setSelectedBackgroundIndex(backgroundChoice.getSelectedIndex()); }));
+        appearance.add(wallpaperControls, a); a.gridy++;
         appearanceCard.add(appearance, BorderLayout.CENTER);
         page.add(appearanceCard); page.add(Box.createVerticalStrut(12));
+
+        JPanel styleCard = glassCard(new BorderLayout(0, 8));
+        styleCard.setAlignmentX(Component.LEFT_ALIGNMENT);
+        styleCard.add(smallHeading("INTERFACE STYLE (NOT GAME SETTINGS)"), BorderLayout.NORTH);
+        JPanel styleButtons = paddedRow(12);
+        styleButtons.add(btn("Visual Style / Home", () -> showVisualPage("Home")));
+        styleButtons.add(btn("Terminal Style (original)", () -> showWorkspace(1,true)));
+        styleCard.add(styleButtons,BorderLayout.CENTER);
+        page.add(styleCard); page.add(Box.createVerticalStrut(12));
 
         JPanel extraCard = glassCard(new BorderLayout(0, 8));
         extraCard.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -1594,9 +2300,9 @@ public class SkyLauncher {
         description.setForeground(MUTED); extraCard.add(description, BorderLayout.SOUTH);
         page.add(extraCard);
 
-        JPanel wrapper = new JPanel(new BorderLayout()); wrapper.setBackground(BG);
+        JPanel wrapper = new JPanel(new BorderLayout()); wrapper.setOpaque(false);
         JScrollPane scroll = new JScrollPane(page);
-        scroll.setBorder(null); scroll.getViewport().setBackground(BG); scroll.getVerticalScrollBar().setUnitIncrement(18);
+        scroll.setBorder(null); styleScroll(scroll);
         wrapper.add(scroll, BorderLayout.CENTER);
         return wrapper;
     }
@@ -1703,17 +2409,26 @@ public class SkyLauncher {
         Map<String, Object> i = inst();
         for (var e : fields.entrySet()) { String v = e.getValue().getText(); i.put(e.getKey(), Set.of("mods_dir", "launch_cmd", "game_args", "env_vars", "pre_launch_cmd").contains(e.getKey()) ? v : v.trim()); }
         i.put("loader", loaderBox.getSelectedItem()); i.put("fullscreen", fullscreen.isSelected());
+        if (useGenericRam != null) i.put("memory_inherit", useGenericRam.isSelected());
         cfg.put("runtime_dir", runtimeF.getText().trim()); cfg.put("token", tokenF.getText().trim()); cfg.put("modrinth_token", mrTokenF.getText().trim());
-        saveConfig(cfg);
+        saveConfig(cfg); updateRamControls();
     }
     void selectInstance(String name) {
         cfg.put("active", name); loading = true;
         instBox.removeAllItems(); for (String k : insts().keySet()) instBox.addItem(k); instBox.setSelectedItem(name);
         Map<String, Object> i = inst();
         for (var e : fields.entrySet()) e.getValue().setText(s(i.get(e.getKey())));
-        loaderBox.setSelectedItem(s(i.get("loader"))); fullscreen.setSelected(b(i.get("fullscreen"))); versionF.setText(s(i.get("version_id")));
+        loaderBox.setSelectedItem(s(i.get("loader"))); fullscreen.setSelected(b(i.get("fullscreen")));
+        if (useGenericRam != null) useGenericRam.setSelected(b(i.get("memory_inherit")));
+        versionF.setText(s(i.get("version_id")));
         runtimeF.setText(s(cfg.get("runtime_dir"))); tokenF.setText(s(cfg.get("token"))); mrTokenF.setText(s(cfg.get("modrinth_token")));
-        loading = false; saveConfig(cfg); refreshAll(); updateAuth();
+        loading = false; saveConfig(cfg); refreshAll(); updateAuth(); updateRamControls();
+        if (visualProfileLabel != null) visualProfileLabel.setText("Selected profile: " + active());
+        if (visualInstanceBox != null) {
+            visualInstanceBox.removeAllItems();
+            for (String k : insts().keySet()) visualInstanceBox.addItem(k);
+            visualInstanceBox.setSelectedItem(active());
+        }
     }
     void refreshAll() { selectLoadFieldsOnly(); refreshList(); }
     void selectLoadFieldsOnly() {   // after a pack changed MC version / loader / version id
@@ -1814,7 +2529,7 @@ public class SkyLauncher {
             profile.put("name", "SkyLauncher: " + active()); profile.put("type","custom");
             profile.put("lastUsed",now); profile.put("lastVersionId",vid);
             profile.put("gameDir",gameDir(instance).toString());
-            profile.put("javaArgs", "-Xmx"+s(instance.get("memory_mb"))+"M " + s(instance.get("jvm_args")));
+            profile.put("javaArgs", "-Xmx"+effectiveMemoryMb(cfg, instance)+"M " + effectiveJvmArgs(cfg, instance));
             if (!s(instance.get("java_path")).isBlank()) profile.put("javaDir",s(instance.get("java_path")));
             else profile.remove("javaDir");
             String w=s(instance.get("window_width")), h=s(instance.get("window_height"));
@@ -1878,41 +2593,96 @@ public class SkyLauncher {
     // ---- mods
     String modLabel(Map<String, Object> inst, String key) { String nm = s(m(m(inst.get("mods")).get(key)).get("name")); return nm.isEmpty() ? key : nm; }
     void addMod() {
-        String text = addField.getText().trim(); String key = null, name = null, ref;
-        Matcher mm = Pattern.compile("(?:https?://)?(?:www\\.)?modrinth\\.com/(?:mod|plugin|datapack)/([^/?#\\s]+).*").matcher(text);
+        String text = addField.getText().trim();
+        if (text.isEmpty()) return;
+        String ref;
+        Matcher mm = Pattern.compile("(?i)(?:https?://)?(?:www\\.)?modrinth\\.com/(?:mod|plugin|datapack)/([^/?#\\s]+).*").matcher(text);
+        Matcher cfLink = Pattern.compile("(?i)(?:https?://)?(?:www\\.)?curseforge\\.com/minecraft/mc-mods/([a-z0-9_-]+)(?:[/?#].*)?").matcher(text);
         if (text.matches("https?://\\S+\\.jar(?:\\?\\S*)?")) ref = "url:" + text;
         else if (mm.matches()) ref = "modrinth:" + mm.group(1);
-        else if (text.toLowerCase().matches("modrinth:\\S+")) ref = "modrinth:" + text.substring(9);
-        else if (text.toLowerCase().contains("curseforge")) { JOptionPane.showMessageDialog(frame, "CurseForge isn't supported in the Java edition yet.\nUse Modrinth/GitHub or the Python version."); return; }
-        else { String repo = text.replaceAll("^https?://github\\.com/", "").replaceAll("^/+|/+$", "").replaceAll("\\.git$", ""); String[] pp = repo.split("/");
-            if (pp.length < 2 || !(pp[0] + "/" + pp[1]).matches("[\\w.-]+/[\\w.-]+")) { JOptionPane.showMessageDialog(frame, "Use a GitHub owner/name or URL, a Modrinth link, or a direct .jar link."); return; }
-            ref = pp[0] + "/" + pp[1]; }
+        else if (text.toLowerCase(Locale.ROOT).matches("modrinth:[^\\s]+")) ref = "modrinth:" + text.substring(9);
+        else if (cfLink.matches()) ref = "curseforge-slug:" + cfLink.group(1);
+        else if (text.toLowerCase(Locale.ROOT).matches("curseforge:[1-9][0-9]*")) ref = "curseforge:" + text.substring(11);
+        else if (text.toLowerCase(Locale.ROOT).contains("curseforge")) {
+            JOptionPane.showMessageDialog(frame,"Use a CurseForge Minecraft mod link or curseforge:PROJECT_ID."); return;
+        } else {
+            String repo = text.replaceAll("^https?://github\\.com/", "").replaceAll("^/+|/+$", "").replaceAll("\\.git$", "");
+            String[] pp = repo.split("/");
+            if (pp.length < 2 || !(pp[0] + "/" + pp[1]).matches("[\\w.-]+/[\\w.-]+")) {
+                JOptionPane.showMessageDialog(frame,"Use a GitHub project, Modrinth link, CurseForge mod link/ID or direct JAR URL."); return;
+            }
+            ref = pp[0] + "/" + pp[1];
+        }
         addField.setText(""); final String fref = ref;
         async("Add mod", () -> {
-            Map<String, Object> i = inst(); String k = fref;
-            if (fref.startsWith("modrinth:")) { Map<String, Object> p = m(mr(cfg, "/project/" + enc(fref.substring(9)))); k = "modrinth:" + p.get("id"); log("Resolved Modrinth '" + fref.substring(9) + "' -> " + p.get("title")); installMod(k, s(p.get("title")), i, false, null, new HashSet<>(Set.of(k)), null, null); }
-            else if (fref.startsWith("url:")) { String u = fref.substring(4); k = "url:" + digest("SHA-1", u.getBytes()).substring(0, 12); installUrl(k, u, i); }
-            else installMod(k, k, i, false, null, new HashSet<>(Set.of(k)), null, null);
+            Map<String, Object> i = inst(); String k = fref, label = fref;
+            if (fref.startsWith("modrinth:")) {
+                Map<String, Object> p = m(mr(cfg, "/project/" + enc(fref.substring(9))));
+                k = "modrinth:" + p.get("id"); label = s(p.get("title"));
+            } else if (fref.startsWith("curseforge-slug:")) {
+                Map<String,Object> p = m(cf(cfg,"/v1/resolve?slug=" + enc(fref.substring("curseforge-slug:".length()))));
+                k = "curseforge:" + p.get("id"); label = s(p.get("name"));
+            } else if (fref.startsWith("curseforge:")) {
+                Map<String,Object> p = m(cf(cfg,"/v1/mods/" + fref.substring(11)));
+                label = s(p.get("name"));
+            } else if (fref.startsWith("url:")) {
+                String u = fref.substring(4); k = "url:" + digest("SHA-1",u.getBytes(StandardCharsets.UTF_8)).substring(0,12);
+                installUrl(k,u,i); log("Done."); return;
+            }
+            log("[" + label + "] checking source...");
+            installMod(k, label, i, false, null, new HashSet<>(Set.of(k)), null, null);
             log("Done.");
         });
     }
     void search() {
-        String q = searchField.getText().trim(); if (q.isEmpty()) return; Map<String, Object> i = inst();
-        async("Search", () -> {
-            List<Object> facets = new ArrayList<>(); facets.add(List.of("project_type:mod"));
-            if (!s(i.get("loader")).isEmpty()) facets.add(List.of("categories:" + i.get("loader")));
-            if (!s(i.get("mc_version")).trim().isEmpty()) facets.add(List.of("versions:" + s(i.get("mc_version")).trim()));
-            Map<String, Object> r = m(mr(cfg, "/search?query=" + enc(q) + "&limit=25&facets=" + enc(Json.write(facets).replaceAll("\\s+", ""))));
-            List<Map<String, Object>> hits = new ArrayList<>(); for (Object o : l(r.get("hits"))) hits.add(m(o));
-            SwingUtilities.invokeLater(() -> { searchModel.setRowCount(0); searchHits.clear(); searchHits.addAll(hits);
-                for (var h : hits) { long dl = n(h.get("downloads"), 0); searchModel.addRow(new Object[]{h.get("title"), dl >= 1_000_000 ? String.format("%.1fM", dl / 1e6) : dl >= 1000 ? dl / 1000 + "K" : dl, s(h.get("description"))}); } });
-            log("Search: " + hits.size() + " result(s)");
+        String q = searchField.getText().trim(); if (q.isEmpty()) return;
+        Map<String,Object> current = inst();
+        boolean useCurseForge = searchProviderBox != null && "CurseForge (VPS)".equals(searchProviderBox.getSelectedItem());
+        boolean compatible = onlyCompatibleSearch != null && onlyCompatibleSearch.isSelected();
+        async("Search mods", () -> {
+            List<Map<String, Object>> hits = new ArrayList<>();
+            if (useCurseForge) {
+                String url="/v1/search?q=" + enc(q) + "&version=" + enc(compatible ? s(current.get("mc_version")) : "") +
+                    "&loader=" + enc(compatible ? s(current.get("loader")) : "");
+                for(Object o:l(m(cf(cfg,url)).get("data"))) {
+                    Map<String,Object> raw=m(o), hit=new LinkedHashMap<>();
+                    hit.put("title",raw.get("name"));hit.put("project_id",raw.get("id"));
+                    hit.put("downloads",raw.get("downloads"));hit.put("description",raw.get("summary"));
+                    hit.put("provider","curseforge");hits.add(hit);
+                }
+            } else {
+                List<Object> facets = new ArrayList<>(); facets.add(List.of("project_type:mod"));
+                if (compatible && !s(current.get("loader")).isEmpty()) facets.add(List.of("categories:" + current.get("loader")));
+                if (compatible && !s(current.get("mc_version")).trim().isEmpty()) facets.add(List.of("versions:" + s(current.get("mc_version")).trim()));
+                Map<String,Object> result=m(mr(cfg,"/search?query="+enc(q)+"&limit=25&facets="+enc(Json.write(facets).replaceAll("\s+",""))));
+                for(Object o:l(result.get("hits"))) {
+                    Map<String,Object> h = new LinkedHashMap<>(m(o));h.put("provider","modrinth");hits.add(h);
+                }
+            }
+            SwingUtilities.invokeLater(() -> {
+                searchModel.setRowCount(0); searchHits.clear(); searchHits.addAll(hits);
+                for (var h : hits) {
+                    long dl = n(h.get("downloads"), 0);
+                    searchModel.addRow(new Object[]{h.get("title"), dl >= 1_000_000 ? String.format("%.1fM",dl / 1e6) : dl >= 1000 ? dl / 1000 + "K" : dl,
+                        s(h.get("description"))});
+                }
+            });
+            log((useCurseForge ? "CurseForge" : "Modrinth") + " search: " + hits.size() + " result(s)");
         });
     }
     void installSearched() {
-        int row = searchTable.getSelectedRow(); if (row < 0 || row >= searchHits.size()) { JOptionPane.showMessageDialog(frame, "Select a search result first."); return; }
-        Map<String, Object> h = searchHits.get(row); String key = "modrinth:" + h.get("project_id"); Map<String, Object> i = inst();
-        async("Install", () -> { installMod(key, s(h.get("title")), i, false, null, new HashSet<>(Set.of(key)), null, null); log("Done."); });
+        int row = searchTable.getSelectedRow();
+        if (row < 0) { JOptionPane.showMessageDialog(frame, "Select a search result first."); return; }
+        int modelRow = searchTable.convertRowIndexToModel(row);
+        if (modelRow < 0 || modelRow >= searchHits.size()) return;
+        Map<String,Object> h=searchHits.get(modelRow);
+        String provider=s(h.get("provider"));
+        String key=(provider.equals("curseforge") ? "curseforge:" : "modrinth:") + h.get("project_id");
+        Map<String,Object> i=inst();
+        async("Install", () -> {
+            installMod(key,s(h.get("title")),i,false,null,new HashSet<>(Set.of(key)),null,null);
+            log("Done.");
+        });
     }
     List<String> selectedKeys() {
         List<String> keys = new ArrayList<>(); Map<String, Object> mods = m(inst().get("mods"));
@@ -1945,7 +2715,6 @@ public class SkyLauncher {
     void installMod(String key, String label, Map<String, Object> inst, boolean auto, String parent, Set<String> seen, String vid, String expectId) throws Exception {
         String src = modSource(key), loader = s(inst.get("loader")); Path dir = Paths.get(s(inst.get("mods_dir")));
         if (src.equals("url")) { installUrl(key, s(m(m(inst.get("mods")).get(key)).get("url")), inst); return; }
-        if (src.equals("curseforge")) { log("[" + label + "] CurseForge mods aren't supported in the Java edition yet - skipped"); return; }
         log("[" + label + "] checking " + src + " (" + loader + " " + (s(inst.get("mc_version")).isEmpty() ? "any MC" : inst.get("mc_version")) + ")...");
         List<Map<String, Object>> versions = listVersions(key, inst, cfg); Map<String, Object> v = null;
         if (vid != null) { for (var x : versions) if (s(x.get("id")).equals(vid)) v = x; } else v = pickLatest(versions);
@@ -1953,9 +2722,11 @@ public class SkyLauncher {
         Files.createDirectories(dir);
         // resolve file + expected hash
         String url, fname, sha1 = null, sha512 = null, sha256 = null, tag = s(v.get("label")), versionId = s(v.get("id")); Map<String, String> dlHeaders = null;
-        if (src.equals("modrinth")) {
+        if (src.equals("modrinth") || src.equals("curseforge")) {
             Map<String, Object> f = m(l(v.get("files")).get(0)); url = s(f.get("url")); fname = Paths.get(s(f.get("name"))).getFileName().toString();
-            sha1 = f.get("sha1") == null ? null : s(f.get("sha1")); sha512 = f.get("sha512") == null ? null : s(f.get("sha512"));
+            sha1 = f.get("sha1") == null || s(f.get("sha1")).isBlank() ? null : s(f.get("sha1"));
+            sha512 = f.get("sha512") == null || s(f.get("sha512")).isBlank() ? null : s(f.get("sha512"));
+            if (src.equals("curseforge")) dlHeaders = cfHeaders(cfg);
         } else {
             Map<String, Object> rel = m(v.get("rel")); Map<String, Object> a = ghCandidates(rel, inst).get(0);
             url = s(a.get("url")); fname = Paths.get(s(a.get("name"))).getFileName().toString(); dlHeaders = ghHeaders(cfg, "application/octet-stream");
@@ -1982,17 +2753,23 @@ public class SkyLauncher {
         }
         Map<String, Object> info = m(m(inst.get("mods")).computeIfAbsent(key, k -> new LinkedHashMap<String, Object>()));
         info.put("name", label); info.put("tag", tag); info.put("file", fname); info.put("sha256", sha); info.put("ids", meta.get("ids")); info.put("loaders", meta.get("loaders"));
-        if (src.equals("modrinth")) info.put("version_id", versionId);
+        if (src.equals("modrinth") || src.equals("curseforge")) info.put("version_id", versionId);
         if (!auto) info.put("auto", false); else info.putIfAbsent("auto", true);
         if (parent != null) { List<Object> rb = l(info.get("required_by")); if (!rb.contains(parent)) rb.add(parent); info.put("required_by", rb); }
         saveConfig(cfg);
-        // required dependencies declared by Modrinth
+        // Install required dependencies advertised by CurseForge or Modrinth.
         for (Object d : l(v.get("deps"))) {
-            String k2 = "modrinth:" + d; if (k2.equals(key) || !seen.add(k2)) continue;
+            boolean cfDep = src.equals("curseforge");
+            String k2 = cfDep ? s(d) : "modrinth:" + d;
+            if (k2.equals(key) || !seen.add(k2)) continue;
             Map<String, Object> have = m(m(inst.get("mods")).get(k2));
-            if (!have.isEmpty() && Files.exists(dir.resolve(s(have.get("file"))))) { continue; }
-            String nm = s(m(mr(cfg, "/project/" + enc(s(d)))).get("title")); log("[" + label + "] requires " + nm);
-            try { installMod(k2, nm, inst, true, key, seen, null, null); } catch (Exception e) { log("[" + nm + "] dependency install failed: " + e); }
+            if (!have.isEmpty() && Files.exists(dir.resolve(s(have.get("file"))))) continue;
+            String nm;
+            if (cfDep) nm = s(m(cf(cfg,"/v1/mods/"+enc(k2.substring(11)))).get("name"));
+            else nm = s(m(mr(cfg,"/project/"+enc(s(d)))).get("title"));
+            log("[" + label + "] requires " + nm);
+            try { installMod(k2,nm,inst,true,key,seen,null,null); }
+            catch (Exception e) { log("[" + nm + "] dependency install failed: " + e); }
         }
         // dependencies only visible inside the jar -> look them up on Modrinth by mod id
         Set<String> have = installedIds(inst);
@@ -2051,24 +2828,97 @@ public class SkyLauncher {
         selectInstance(name); packJob(() -> installGithubPack(cfg, "Newguygame/fathom-studios-mc-pack", "main", inst(), true, this::log), false);
     }
     void installPackDialog() {
-        String text = JOptionPane.showInputDialog(frame, "<html>Pack link or GitHub repo:<br>GitHub: owner/name or https://github.com/owner/name<br>Modrinth: https://modrinth.com/modpack/&lt;slug&gt;[/version/&lt;id&gt;]</html>");
-        if (text == null || text.isBlank()) return; text = text.trim();
-        Matcher mr = Pattern.compile("(?:https?://)?(?:www\\.)?modrinth\\.com/modpack/([^/?#\\s]+)(?:/version/([^/?#\\s]+))?.*").matcher(text);
-        String repo = text.replaceAll("^https?://github\\.com/", "").replaceAll("^/+|/+$", "").replaceAll("\\.git$", ""); String[] pp = repo.split("/");
-        boolean isMr = mr.matches(), isGh = !isMr && pp.length >= 2 && (pp[0] + "/" + pp[1]).matches("[\\w.-]+/[\\w.-]+");
-        if (text.contains("curseforge")) { JOptionPane.showMessageDialog(frame, "CurseForge packs aren't supported in the Java edition yet."); return; }
-        if (!isMr && !isGh) { JOptionPane.showMessageDialog(frame, "Couldn't recognise that as a GitHub repo or Modrinth modpack link."); return; }
-        String slug = isMr ? mr.group(1) : pp[1], ver = isMr && mr.group(2) != null ? mr.group(2) : "", ref = "main";
-        if (isGh) { String r = JOptionPane.showInputDialog(frame, "Branch or tag:", "main"); if (r == null) return; ref = r.trim().isEmpty() ? "main" : r.trim(); }
-        if (JOptionPane.showConfirmDialog(frame, "Install into a NEW profile?\n(No = replace the mods folder of '" + active() + "')", "New profile?", JOptionPane.YES_NO_OPTION) == 0) {
-            String pn = slug, base = slug; for (int n = 2; insts().containsKey(pn); n++) pn = base + "-" + n;
-            Map<String, Object> ni = defaultInstance(pn, s(inst().get("mc_version")).isEmpty() ? "1.21.1" : s(inst().get("mc_version")), s(inst().get("loader")).isEmpty() ? "neoforge" : s(inst().get("loader")));
-            if (isGh) { String mc = JOptionPane.showInputDialog(frame, "Minecraft version for this pack:", ni.get("mc_version")); if (mc == null) return; ni.put("mc_version", mc.trim());
-                Object ld = JOptionPane.showInputDialog(frame, "Loader:", "Loader", JOptionPane.PLAIN_MESSAGE, null, LOADERS, ni.get("loader")); if (ld == null) return; ni.put("loader", ld); }
-            insts().put(pn, ni); selectInstance(pn);
+        String text = JOptionPane.showInputDialog(frame,
+            "<html>Install a modpack from:<br>CurseForge: https://www.curseforge.com/minecraft/modpacks/name<br>Modrinth: https://modrinth.com/modpack/name<br>GitHub: owner/repo</html>");
+        if (text == null || text.isBlank()) return;
+        installPackFromText(text.trim());
+    }
+    void installPackFromText(String text) {
+        Matcher mr = Pattern.compile("(?i)(?:https?://)?(?:www\\.)?modrinth\\.com/modpack/([^/?#\\s]+)(?:/version/([^/?#\\s]+))?.*").matcher(text);
+        Matcher cf = Pattern.compile("(?i)(?:https?://)?(?:www\\.)?curseforge\\.com/minecraft/modpacks/([a-z0-9_-]+)(?:[/?#].*)?").matcher(text);
+        boolean isMr = mr.matches(), isCf = cf.matches() || text.matches("(?i)curseforge-pack:[1-9][0-9]*");
+        String slug = isMr ? mr.group(1) : cf.matches() ? cf.group(1) : "";
+        String ver = isMr && mr.group(2) != null ? mr.group(2) : "";
+        String repo = text.replaceFirst("(?i)^https?://github\\.com/", "").replaceAll("^/+|/+$", "").replaceAll("\\.git$", "");
+        boolean isGh = !isMr && !isCf && repo.matches("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/.*)?");
+        if (!isMr && !isCf && !isGh) {
+            JOptionPane.showMessageDialog(frame,"Use a CurseForge modpacks link, a Modrinth modpack link or a GitHub owner/repo.");return;
         }
-        final String frepo = repo.isEmpty() ? "" : pp.length >= 2 ? pp[0] + "/" + pp[1] : repo, fref = ref, fver = ver;
-        packJob(() -> { if (isMr) installModrinthPack(cfg, slug, fver, inst(), true, this::log); else installGithubPack(cfg, frepo, fref, inst(), true, this::log); }, false);
+        String cfId = isCf && slug.isEmpty() ? text.substring(text.indexOf(':')+1) : "";
+        String ref = "main";
+        if (isGh) {
+            repo = String.join("/",Arrays.copyOf(repo.split("/"),2));
+            String r = JOptionPane.showInputDialog(frame,"Branch or tag:","main");
+            if (r == null) return;
+            ref = r.trim().isEmpty() ? "main" : r.trim();
+        }
+        String pn = isGh ? repo.split("/")[1] : !slug.isEmpty() ? slug : "CurseForge-"+cfId;
+        if (JOptionPane.showConfirmDialog(frame,
+                "Install into a NEW profile?\n(No = replace the active profile's modpack)",
+                "New profile?",JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION) {
+            String base = pn; for (int n=2;insts().containsKey(pn);n++) pn=base+"-"+n;
+            Map<String,Object> ni = defaultInstance(pn, s(inst().get("mc_version")).isEmpty()?"1.21.1":s(inst().get("mc_version")),
+                s(inst().get("loader")).isEmpty()?"neoforge":s(inst().get("loader")));
+            if (isGh) {
+                String mc=JOptionPane.showInputDialog(frame,"Minecraft version:",ni.get("mc_version")); if(mc==null)return;
+                ni.put("mc_version",mc.trim());
+                Object ld=JOptionPane.showInputDialog(frame,"Loader:","Loader",JOptionPane.PLAIN_MESSAGE,null,LOADERS,ni.get("loader"));
+                if(ld==null)return;ni.put("loader",ld);
+            }
+            insts().put(pn,ni);selectInstance(pn);
+        }
+        Map<String,Object> target = inst();
+        String repoFinal=repo,refFinal=ref,slugFinal=slug,versionFinal=ver,cfIdFinal=cfId;
+        packJob(()->{
+            if (isMr) installModrinthPack(cfg,slugFinal,versionFinal,target,true,this::log);
+            else if (isCf) {
+                String id=cfIdFinal;
+                if (id.isBlank()) id=s(m(cf(cfg,"/v1/packs/resolve?slug="+enc(slugFinal))).get("id"));
+                installCurseForgePack(cfg,id,target,true,this::log);
+            } else installGithubPack(cfg,repoFinal,refFinal,target,true,this::log);
+        },false);
+    }
+    void searchModpacks() {
+        Object provider=JOptionPane.showInputDialog(frame,"Search modpacks on:","Find modpacks",
+            JOptionPane.QUESTION_MESSAGE,null,new String[]{"Modrinth","CurseForge (VPS)"},"Modrinth");
+        if(provider==null)return;
+        String query=JOptionPane.showInputDialog(frame,"Search modpack name:");
+        if(query==null || query.trim().length()<2)return;
+        String mc = s(inst().get("mc_version")), loader = s(inst().get("loader"));
+        boolean compatible = !Boolean.FALSE.equals(cfg.get("compatible_mod_filter"));
+        Thread thread = new Thread(()->{
+          try {
+            List<Object> results=new ArrayList<>();
+            boolean useCf=provider.toString().startsWith("CurseForge");
+            if(useCf) results.addAll(l(m(cf(cfg,"/v1/packs/search?q="+enc(query.trim())+
+                "&version="+enc(compatible?mc:"")+"&loader="+enc(compatible?loader:""))).get("data")));
+            else {
+                List<Object> facets=new ArrayList<>(); facets.add(List.of("project_type:modpack"));
+                if(compatible && !mc.isBlank()) facets.add(List.of("versions:"+mc));
+                if(compatible && !loader.isBlank()) facets.add(List.of("categories:"+loader));
+                results.addAll(l(m(mr(cfg,"/search?query="+enc(query.trim())+"&limit=20&facets="+
+                    enc(Json.write(facets).replaceAll("\\s+","")))).get("hits")));
+            }
+            if(results.isEmpty()) { SwingUtilities.invokeLater(()->JOptionPane.showMessageDialog(frame,"No modpacks found."));return; }
+            String[] choices=new String[results.size()];
+            for(int n=0;n<results.size();n++) {
+                Map<String,Object> item=m(results.get(n));
+                choices[n]=s(useCf?item.get("name"):item.get("title"))+"  ("+s(item.get("slug"))+")";
+            }
+            SwingUtilities.invokeLater(()->{
+                Object selected=JOptionPane.showInputDialog(frame,"Select a modpack:","Search modpacks",
+                    JOptionPane.QUESTION_MESSAGE,null,choices,choices[0]);
+                if(selected!=null) for(int n=0;n<choices.length;n++) if(choices[n].equals(selected)) {
+                    String id=s(m(results.get(n)).get(useCf?"id":"slug"));
+                    installPackFromText(useCf?"curseforge-pack:"+id:"https://modrinth.com/modpack/"+id);break;
+                }
+            });
+          } catch(Exception ex) {
+            log("Modpack search error: " + ex.getMessage());
+            SwingUtilities.invokeLater(()->JOptionPane.showMessageDialog(frame,"Modpack search failed: " + ex.getMessage()));
+          }
+        }, "SkyLauncher-search-modpacks");
+        thread.setDaemon(true); thread.start();
     }
     void packJob(ThrowingRun r, boolean restore) {
         Map<String, Object> i = inst();
@@ -2086,31 +2936,130 @@ public class SkyLauncher {
             log("Profile '" + active() + "' is ready. Press 'Install / prepare' then PLAY.");
         });
     }
-    void reinstallPack() {
-        Map<String, Object> i = inst(); String src = s(i.get("pack_source")), repo = s(i.get("pack_repo")), ref = s(i.get("pack_ref")).isEmpty() ? "main" : s(i.get("pack_ref"));
-        if (src.equals("modrinth") && !s(i.get("pack_url")).isEmpty()) {
-            String slug = s(i.get("pack_url")).replaceAll(".*/modpack/", "");
-            if (JOptionPane.showConfirmDialog(frame, "Re-download the latest version of " + slug + "?\nThe mods folder is replaced; mods you added are re-installed.", "Reinstall modpack", JOptionPane.YES_NO_OPTION) == 0) packJob(() -> installModrinthPack(cfg, slug, "", i, true, this::log), true);
-            return;
-        }
-        if (repo.isEmpty()) { JOptionPane.showMessageDialog(frame, "This profile has no GitHub/Modrinth pack recorded."); return; }
-        if (JOptionPane.showConfirmDialog(frame, "Re-download and reinstall " + repo + "@" + ref + "?\nThe mods folder is replaced; mods you added are re-installed.", "Reinstall modpack", JOptionPane.YES_NO_OPTION) == 0) packJob(() -> installGithubPack(cfg, repo, ref, i, true, this::log), true);
+    String packSource(Map<String,Object> i) {
+        String src=s(i.get("pack_source"));
+        if(src.isBlank() && "Fathom Studios".equals(s(i.get("name"))) && !s(i.get("pack_sha")).isBlank()) return "github";
+        return src;
     }
-    void checkPackUpdate() {
-        Map<String, Object> i = inst(); String repo = s(i.get("pack_repo")), ref = s(i.get("pack_ref")).isEmpty() ? "main" : s(i.get("pack_ref"));
-        if (repo.isEmpty()) { JOptionPane.showMessageDialog(frame, "Update checks only work for packs installed from GitHub.\nFor Modrinth packs use 'Reinstall pack'."); return; }
-        Thread t = new Thread(() -> {
-            try {
-                Map<String, Object> c = m(getJson("https://api.github.com/repos/" + repo + "/commits/" + enc(ref).replace("%2F", "/"), ghHeaders(cfg, null)));
-                String latest = s(c.get("sha")), cur = s(i.get("pack_sha"));
-                SwingUtilities.invokeLater(() -> {
-                    if (cur.isEmpty()) JOptionPane.showMessageDialog(frame, "The installed commit isn't recorded. Use 'Reinstall pack' once and updates will be detected.");
-                    else if (cur.equals(latest)) JOptionPane.showMessageDialog(frame, repo + " is up to date (" + cur.substring(0, 7) + ").");
-                    else if (JOptionPane.showConfirmDialog(frame, "A newer version of " + repo + " is available.\nInstalled: " + cur.substring(0, 7) + "\nLatest: " + latest.substring(0, 7) + "\n\nUpdate now?", "Modpack update", JOptionPane.YES_NO_OPTION) == 0)
-                        packJob(() -> installGithubPack(cfg, repo, ref, i, true, this::log), true);
+    static String modrinthPackSlug(Map<String,Object> i) {
+        String id=s(i.get("pack_id"));
+        if(!id.isBlank())return id;
+        String url=s(i.get("pack_url"));return url.replaceAll(".*/modpack/","").replaceAll("[/?#].*$","");
+    }
+    // All sources report a stable version identifier, not only a display version.
+    Map<String,Object> newestPack(Map<String,Object> i) throws Exception {
+        String src=s(i.get("pack_source"));
+        if(src.equals("github")) {
+            String repo=s(i.get("pack_repo"));
+            if(repo.isBlank() && "Fathom Studios".equals(s(i.get("name")))) repo="Newguygame/fathom-studios-mc-pack";
+            String ref=s(i.get("pack_ref")).isBlank()?"main":s(i.get("pack_ref"));
+            if(repo.isBlank())throw new IOException("GitHub repository unknown");
+            String sha=s(m(getJson("https://api.github.com/repos/"+repo+"/commits/"+enc(ref).replace("%2F","/"),ghHeaders(cfg,null))).get("sha"));
+            return Map.of("id",sha,"label",sha.length()>7?sha.substring(0,7):sha);
+        }
+        if(src.equals("modrinth")) {
+            String id=modrinthPackSlug(i);
+            if(id.isBlank())throw new IOException("Modrinth pack ID missing");
+            Map<String,Object> ver=latestModrinthPack(cfg,id);
+            return Map.of("id",s(ver.get("id")),"label",s(ver.get("version_number")));
+        }
+        if(src.equals("curseforge")) {
+            String id=s(i.get("pack_id"));
+            if(id.isBlank())throw new IOException("CurseForge pack ID missing");
+            Map<String,Object> ver=latestCurseForgePack(cfg,id);
+            return Map.of("id",s(ver.get("id")),"label",s(ver.get("name")));
+        }
+        throw new IOException("Unknown pack source: "+src);
+    }
+    String installedPackId(Map<String,Object> i) {
+        return switch(s(i.get("pack_source"))) {
+            case "github" -> s(i.get("pack_sha"));
+            case "modrinth" -> s(i.get("pack_version_id"));
+            case "curseforge" -> s(i.get("pack_file_id"));
+            default -> "";
+        };
+    }
+    void installNewestPack(Map<String,Object> i, Log logger) throws Exception {
+        String src=s(i.get("pack_source"));
+        if(src.equals("github")) {
+            String repo=s(i.get("pack_repo"));
+            if(repo.isBlank() && "Fathom Studios".equals(s(i.get("name")))) repo="Newguygame/fathom-studios-mc-pack";
+            installGithubPack(cfg,repo,s(i.get("pack_ref")).isBlank()?"main":s(i.get("pack_ref")),i,true,logger);
+        } else if(src.equals("modrinth")) installModrinthPack(cfg,modrinthPackSlug(i),"",i,true,logger);
+        else if(src.equals("curseforge")) installCurseForgePack(cfg,s(i.get("pack_id")),i,true,logger);
+        else throw new IOException("This profile has no supported pack source");
+    }
+    void restorePackMods(Map<String,Object> i,Map<String,Object> tracked,Log logger) {
+        if(tracked.isEmpty())return;
+        logger.log("Restoring separately installed mods...");
+        Set<String> have=installedIds(i);
+        i.put("mods",new LinkedHashMap<String,Object>());
+        for(var entry:tracked.entrySet()) {
+            Map<String,Object> mod=m(entry.getValue());
+            List<Object> ids=l(mod.get("ids"));
+            if(!ids.isEmpty() && have.containsAll(ids.stream().map(SkyLauncher::s).toList()))continue;
+            try { installMod(entry.getKey(),s(mod.get("name")),i,b(mod.get("auto")),null,new HashSet<>(Set.of(entry.getKey())),null,null); }
+            catch(Exception e){logger.log("Could not restore "+entry.getKey()+": "+e.getMessage());}
+        }
+    }
+    void reinstallPack() {
+        Map<String,Object> i=inst();
+        if(s(i.get("pack_source")).isEmpty()) {JOptionPane.showMessageDialog(frame,"This profile has no modpack installed.");return;}
+        if(JOptionPane.showConfirmDialog(frame,"Reinstall the latest " + s(i.get("pack_name"))+
+                "?\nThe current mods folder will be replaced; additional mods will be restored.",
+                "Reinstall modpack",JOptionPane.YES_NO_OPTION)!=JOptionPane.YES_OPTION)return;
+        Map<String,Object> tracked=new LinkedHashMap<>(m(i.get("mods")));
+        async("Reinstall modpack",()->{
+            installNewestPack(i,this::log);restorePackMods(i,tracked,this::log);saveConfig(cfg);
+            log("Modpack reinstalled.");
+        });
+    }
+    void checkPackUpdate() { checkPackUpdates(false); }
+    void checkAllPackUpdates() { checkPackUpdates(true); }
+    void checkPackUpdates(boolean all) {
+        if(busy.get()) {JOptionPane.showMessageDialog(frame,"Another install is already running.");return;}
+        List<Map<String,Object>> targets=new ArrayList<>();
+        if(all) targets.addAll(insts().values().stream().map(SkyLauncher::m).toList());
+        else targets.add(inst());
+        Thread checker=new Thread(()->{
+            List<Map<String,Object>> updates=new ArrayList<>();
+            StringBuilder summary=new StringBuilder();
+            for(Map<String,Object> item:targets) {
+                String source=s(item.get("pack_source"));
+                if(!Set.of("github","modrinth","curseforge").contains(source))continue;
+                String name=s(item.get("pack_name"));if(name.isBlank())name="Unnamed pack";
+                try {
+                    Map<String,Object> latest=newestPack(item);
+                    String old=installedPackId(item), next=s(latest.get("id"));
+                    boolean different=old.isEmpty() ? !s(item.get("pack_version")).equals(s(latest.get("label"))) : !old.equals(next);
+                    if(different) {
+                        updates.add(item);
+                        summary.append("• ").append(name).append(" (").append(source).append(") → ").append(latest.get("label")).append("\n");
+                    } else log(name+" is up to date.");
+                } catch(Exception ex) {log("Cannot check "+name+": "+ex.getMessage());}
+            }
+            SwingUtilities.invokeLater(()->{
+                if(updates.isEmpty()) {JOptionPane.showMessageDialog(frame,"No new modpack updates found. See log for any errors.");return;}
+                int yes=JOptionPane.showConfirmDialog(frame,"Updates found:\n\n"+summary+
+                    "\nDownload and install these updates?", "Modpack updates",JOptionPane.YES_NO_OPTION);
+                if(yes!=JOptionPane.YES_OPTION)return;
+                async("Update modpacks",()->{
+                    for(Map<String,Object> item:updates) {
+                        String name=s(item.get("pack_name"));
+                        Map<String,Object> tracked=new LinkedHashMap<>(m(item.get("mods")));
+                        try {
+                            log("Updating "+name+"...");
+                            installNewestPack(item,this::log);
+                            restorePackMods(item,tracked,this::log);
+                            saveConfig(cfg);
+                            log(name+" updated successfully.");
+                        } catch(Exception ex) { log(name+" update failed: "+ex.getMessage()); }
+                    }
+                    saveConfig(cfg);
                 });
-            } catch (Exception e) { log("Pack update check failed: " + e.getMessage()); }
-        }); t.setDaemon(true); t.start();
+            });
+        },"SkyLauncher-modpack-updates");
+        checker.setDaemon(true);checker.start();
     }
 
     // ---- running the game
@@ -2149,12 +3098,13 @@ public class SkyLauncher {
         if (!jvm.contains("-cp") && !jvm.contains("-classpath")) { jvm.add("-cp"); jvm.add("${classpath}"); }
         if (jvm.stream().noneMatch(a -> a.startsWith("-Djava.library.path"))) jvm.add(0, "-Djava.library.path=${natives_directory}");
         if (OS.equals("osx") && !args.isEmpty() && !jvm.contains("-XstartOnFirstThread")) jvm.add(0, "-XstartOnFirstThread");
-        int mem; try { mem = Integer.parseInt(s(inst.get("memory_mb")).trim()); } catch (NumberFormatException e) { mem = 4096; }
+        int mem = effectiveMemoryMb(cfg, inst);
         List<String> extra = new ArrayList<>(); String w = s(inst.get("window_width")).trim(), h = s(inst.get("window_height")).trim();
         if (w.matches("\\d+") && h.matches("\\d+")) { extra.add("--width"); extra.add(w); extra.add("--height"); extra.add(h); }
         if (b(inst.get("fullscreen"))) extra.add("--fullscreen");
         extra.addAll(shlex(s(inst.get("game_args"))));
-        List<String> cmd = new ArrayList<>(List.of(java, "-Xmx" + mem + "M")); cmd.addAll(shlex(s(inst.get("jvm_args")))); if (!logArg.isEmpty()) cmd.add(subst(logArg, v));
+        List<String> cmd = new ArrayList<>(List.of(java, "-Xmx" + mem + "M"));
+        cmd.addAll(shlex(effectiveJvmArgs(cfg, inst))); if (!logArg.isEmpty()) cmd.add(subst(logArg, v));
         for (String a : jvm) cmd.add(subst(a, v)); cmd.add(s(ver.get("mainClass"))); for (String a : game) cmd.add(subst(a, v)); cmd.addAll(extra);
         return cmd;
     }
@@ -2204,6 +3154,24 @@ public class SkyLauncher {
         check(s(defaultInstance("Test", "1.21.1", "neoforge").get("mods_dir"))
                 .equals(BASE.resolve("instances").resolve("Test").resolve(".minecraft").resolve("mods").toString()),
                 "Python-compatible instance folder");
+
+        Map<String, Object> memConfig = new LinkedHashMap<>();
+        memConfig.put("generic_memory_mb", "10240"); memConfig.put("generic_jvm_args", "-XX:+UseG1GC");
+        Map<String, Object> inherited = defaultInstance("Inherited", "1.21.1", "neoforge");
+        check(effectiveMemoryMb(memConfig, inherited) == 10240, "generic 10GB inherited by new pack");
+        inherited.put("memory_inherit", false); inherited.put("memory_mb", "6144");
+        check(effectiveMemoryMb(memConfig, inherited) == 6144, "per-pack 6GB overrides generic 10GB");
+        inherited.put("memory_mb", "invalid");
+        check(effectiveMemoryMb(memConfig, inherited) == 10240, "invalid pack RAM falls back to generic");
+        check(effectiveJvmArgs(memConfig, inherited).equals("-XX:+UseG1GC"), "generic JVM arguments inherited");
+        inherited.put("jvm_args", "-XX:+UseZGC");
+        check(effectiveJvmArgs(memConfig, inherited).equals("-XX:+UseZGC"), "per-pack JVM arguments override generic");
+        Map<String,Object> cfSettings = new LinkedHashMap<>(Map.of("curseforge_bridge_url", "https://cf.example.com/"));
+        check(cfBase(cfSettings).equals("https://cf.example.com"), "CurseForge bridge HTTPS URL normalization");
+        check(cfDownloadUrl(cfSettings, "12345", "67890").equals("https://cf.example.com/v1/download/12345/67890"), "CurseForge mod or pack routed via VPS");
+        check(!cfHeaders(cfSettings).containsKey("Authorization"), "public CurseForge bridge needs no client token");
+        try { cfSettings.put("curseforge_bridge_url", "http://example.com:8767"); cfBase(cfSettings); throw new IllegalStateException("insecure bridge URL accepted"); }
+        catch (IOException ignored) { check(true, "CurseForge VPS requires HTTPS"); }
 
         check(s(m(m(c.get("instances")).get("Fathom Studios")).get("loader")).equals("neoforge"), "reads Python-written config");
         check(mvnPath("net.fabricmc:fabric-loader:0.15.0").equals("net/fabricmc/fabric-loader/0.15.0/fabric-loader-0.15.0.jar"), "maven path");

@@ -53,3 +53,28 @@ It's a good idea to back up your worlds and settings before making major changes
 ## Need help?
 
 [Report a problem or ask a question on GitHub](https://github.com/Newguygame/skylauncher/issues).
+
+
+## SkyLauncher 3.1.3 release details
+
+The Windows installer, macOS Intel and Apple Silicon DMGs, Linux DEB, and Linux portable archives
+are built from the same `src/SkyLauncher.java`. Native packages bundle Java; the portable JAR
+requires a compatible Java runtime (Java 17+).
+
+The four supplied wallpapers are packaged from `assets/background-*.jpg`.
+Visual Style and the original Terminal Style can be chosen in Settings; generic RAM defaults
+apply to all modpacks unless a pack overrides them. CurseForge support uses a shared public
+VPS bridge over HTTPS and requires no user token. The API key never belongs in this repository.
+CurseForge downloads depend on the VPS being operational and CurseForge permissions.
+
+### Build locally
+
+Run `bash build-local.sh` on a machine with JDK 21. On Windows use
+`./build-windows-full-offline.ps1` with JDK 21 and Inno Setup 6. CI builds all platform packages
+from GitHub Actions.
+
+### Publishing
+
+The build workflow publishes `v3.1.3` only for a push to `main` with commit title beginning
+`Release SkyLauncher 3.1.3`, or on a `v*` tag push. The release job waits for platform builds
+and tests to pass. This is the requested exception to the no-version-bump policy.

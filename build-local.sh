@@ -5,8 +5,10 @@ rm -rf build input
 mkdir -p build/classes build/launcher input release-ready windows-installer/bundled
 javac --release 17 -encoding UTF-8 -d build/classes src/SkyLauncher.java src/SkyLauncherSetup.java
 find build/classes -maxdepth 1 -name 'SkyLauncher*.class' ! -name 'SkyLauncherSetup*.class' -exec cp {} build/launcher/ \;
+bash scripts/copy_assets.sh build/launcher
 for f in icons/SkyLauncher.{png,ico,icns}; do [[ ! -f "$f" ]] || { mkdir -p build/launcher/icons; cp "$f" build/launcher/icons; }; done
 jar --create --file input/SkyLauncher.jar --main-class SkyLauncher -C build/launcher .
+bash scripts/copy_assets.sh build/classes
 cp input/SkyLauncher.jar build/classes/bundled-SkyLauncher.jar
 mkdir -p build/classes/bundled
 cp input/SkyLauncher.jar build/classes/bundled/SkyLauncher.jar

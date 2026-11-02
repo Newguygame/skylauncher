@@ -96,5 +96,6 @@ jobs:
         run: |
           mkdir -p build/gui-classes
           javac --release 17 -encoding UTF-8 -d build/gui-classes src/SkyLauncher.java
+          bash scripts/copy_assets.sh build/gui-classes
       - name: Open graphical window using virtual screen
         run: xvfb-run -a bash tests/smoke-gui.sh

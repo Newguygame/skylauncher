@@ -1,4 +1,4 @@
-param([string]$SetupPath = 'dist\SkyLauncher-3.1.2.exe')
+param([string]$SetupPath = 'dist\SkyLauncher-3.1.3.exe')
 
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
