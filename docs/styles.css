@@ -38,3 +38,13 @@
 
 /* Mobile: keep support link visible beside the GitHub button. */
 @media(max-width:650px){.site-header nav a.nav-support{display:inline-flex!important;visibility:visible!important;opacity:1!important}.site-header nav{gap:7px}.site-header nav a.nav-github{padding:9px}.site-header .brand{min-width:0}}
+
+/* Contact dropdown, accessible on desktop and mobile. */
+.contact-menu{position:relative;display:inline-block;color:#eaf4ff;font-size:13px;z-index:20}
+.contact-menu summary{list-style:none;cursor:pointer;border:1px solid #5e91c2;border-radius:9px;padding:9px 13px;background:#173650;color:#fff;font-weight:700;white-space:nowrap}
+.contact-menu summary::-webkit-details-marker{display:none}
+.contact-menu summary:focus-visible,.contact-options a:focus-visible{outline:2px solid #8acaff;outline-offset:3px}
+.contact-options{position:absolute;right:0;top:calc(100% + 8px);min-width:180px;padding:7px;background:#102338;border:1px solid #456b8b;border-radius:11px;box-shadow:0 14px 28px #0007;display:flex;flex-direction:column;gap:3px}
+.contact-options a{display:block!important;color:#eaf4ff!important;text-decoration:none;padding:11px 12px;border-radius:7px;white-space:nowrap}
+.contact-options a:hover{background:#285071}
+@media(max-width:650px){.contact-menu{display:inline-block!important}.contact-menu summary{padding:9px 10px;font-size:12px}}
