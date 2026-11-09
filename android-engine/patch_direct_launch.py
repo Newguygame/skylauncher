@@ -113,5 +113,40 @@ def patch_auto_installer_return(engine: Path):
                 });
             }"""
     txt = patch_one(txt, old, new, "finish native modloader installer after Java exits")
+    # The JAR's own class version may be Java 8 even if its Forge/NeoForge
+    # installer needs Java 17 or 21. Respect SkyLauncher's Minecraft target.
+    anchor = "            launchJavaRuntime(selectedRuntime, modFile, argList);"
+    inserted = """            int minimumJava = getIntent().getIntExtra("skylauncher_java_requirement", 0);
+            if (minimumJava > 0 && (selectedRuntime == null
+                    || selectedRuntime.javaVersion < minimumJava)) {
+                String nearest = MultiRTUtils.getNearestJreName(minimumJava);
+                if (nearest == null) {
+                    finalErrorDialog("This modloader needs Java " + minimumJava
+                            + " or later. Install that runtime in SkyLauncher first.");
+                    return;
+                }
+                selectedRuntime = MultiRTUtils.forceReread(nearest);
+                if (selectedRuntime == null || selectedRuntime.javaVersion < minimumJava) {
+                    finalErrorDialog("No compatible Java " + minimumJava
+                            + " runtime is installed.");
+                    return;
+                }
+            }
+"""
+    txt = patch_one(txt, anchor, inserted + anchor,
+                    "version-aware modloader Java runtime")
+    source.write_text(txt, encoding="utf-8")
+
+
+def patch_cacio_bootclasspath(engine: Path):
+    """Avoid passing an invalid empty -Xbootclasspath/p or /a VM argument."""
+    source = engine / "app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/Tools.java"
+    txt = source.read_text(encoding="utf-8")
+    anchor = '        javaArgList.add(cacioClasspath.toString());'
+    txt = patch_one(txt, anchor,
+                    '        if (cacioClasspath.indexOf(":") >= 0) {\\n'
+                    '            javaArgList.add(cacioClasspath.toString());\\n'
+                    '        }',
+                    "empty Caciocavallo bootclasspath")
     source.write_text(txt, encoding="utf-8")
 
