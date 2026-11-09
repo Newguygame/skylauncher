@@ -174,9 +174,9 @@ def overlay_gradle(engine):
     text = replace(text, "minSdkVersion 21", "minSdkVersion 26")
     # The androidnsbypass AAR requires API >=36.1; pinned upstream
     # defaults to API 36, which fails :checkDebugAarMetadata.
-    text = re.sub(r"compileSdk\\s*=\\s*36\\b", "compileSdk = 37", text)
+    text = re.sub(r"compileSdk\s*=\s*36\b", "compileSdk = 37", text)
 
-    text = replace(text, "compileSdk = 37", "compileSdk = 36")
+    # Keep compileSdk 37: androidnsbypass requires >36.0 and API 37 is installed by CI.
     text = replace(text, "applicationIdSuffix '.debug'",
                    "// Keep the same package identity for SkyLauncher Android")
     text = text.replace("org.angelauramc.amethyst", PKG)
