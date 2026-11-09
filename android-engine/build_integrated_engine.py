@@ -173,8 +173,8 @@ def overlay_gradle(engine):
     text = path.read_text(encoding="utf-8")
     text = replace(text, 'applicationId "org.angelauramc.amethyst"',
                    'applicationId "' + PKG + '"')
-    text = replace(text, "versionCode 10000000", "versionCode 6")
-    text = replace(text, "versionName getVersionName()", 'versionName "0.5.0-engine-alpha"')
+    text = replace(text, "versionCode 10000000", "versionCode 7")
+    text = replace(text, "versionName getVersionName()", 'versionName "0.6.0-engine-alpha"')
     text = replace(text, "minSdkVersion 21", "minSdkVersion 26")
     # The androidnsbypass AAR requires API >=36.1; pinned upstream
     # defaults to API 36, which fails :checkDebugAarMetadata.
