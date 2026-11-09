@@ -31,10 +31,10 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10.2'
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-      - name: Install Android 35 SDK
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Check Android SDK
+        run: |
+          echo "SDK at $ANDROID_HOME"
+          test -f "$ANDROID_HOME/platforms/android-35/android.jar" || sdkmanager "platforms;android-35" "build-tools;35.0.0"
       - name: Build SkyLauncher Android
         run: gradle -p android assembleDebug --no-daemon --stacktrace
       - name: Verify APK exists
