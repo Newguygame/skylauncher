@@ -273,6 +273,44 @@ Het gedownloade bestand is geen geldige Android APK.||The downloaded file is not
 Het bestand is geen officiële Amethyst-app (pakket-ID klopt niet).||The file is not an official Amethyst app (package ID mismatch).
 Oude download kon niet vervangen worden.||Could not replace the previous download.
 Kon de APK niet klaarzetten voor installatie.||Could not prepare APK for installation.
+Profielen||Profiles
+Instellingen||Settings
+Selecteren||Select
+Bewerken||Edit
+Verwijderen||Delete
+Annuleren||Cancel
+Opslaan||Save
+Begrepen||Got it
+Sluiten||Close
+Profielnaam||Profile name
+Kleurenprofiel||Color theme
+Achtergrond||Background
+Uitschakelen||Disable
+Inschakelen||Enable
+Installeer||Install
+Afmelden||Sign out
+Ongeldige Minecraft-versie in SkyLauncher-profiel.||Invalid Minecraft version in SkyLauncher profile.
+Minecraft-profielopslag kon niet worden geopend.||Could not open Minecraft profile storage.
+Minecraft-instellingen konden niet worden opgeslagen.||Could not save Minecraft engine settings.
+Engineprofiel ingesteld: ||Engine profile configured: 
+, versie ||, version 
+Engineprofiel fout: ||Engine profile error: 
+Minecraft kan niet starten||Cannot start Minecraft
+Geen geïnstalleerde ||No installed 
+-versie gevonden voor Minecraft || release was found for Minecraft 
+Minecraft-account toevoegen||Add Minecraft account
+Meld je eenmaal aan bij de geïntegreerde engine. ||Sign in once to the integrated game engine. 
+Daarna start Minecraft direct vanuit SkyLauncher.||Afterwards, Minecraft starts directly from SkyLauncher.
+Aanmelden||Sign in
+Terug||Back
+Modloader ontbreekt||Modloader missing
+Voor profiel '||For profile '
+' is ||' the required modloader is 
+ voor Minecraft || for Minecraft 
+ nog niet geïnstalleerd in de geïntegreerde engine. || not installed in the integrated game engine. 
+De game start niet als vanilla. Je kunt de modloader ||The game will never silently start as Vanilla. You can 
+eenmalig installeren via de engine-instellingen.||install the modloader once in the engine settings.
+Modloader installeren||Install modloader
 """.strip()
 
 PAIRS = []
