@@ -122,6 +122,8 @@ def overlay_java(engine, sky):
                     target_dir / "SkyEngineProfileBridge.java")
     shutil.copyfile(sky / "android-engine/SkyEngineLoaderInstaller.java",
                     target_dir / "SkyEngineLoaderInstaller.java")
+    shutil.copyfile(sky / "android-engine/SkyPackInstaller.java",
+                    target_dir / "SkyPackInstaller.java")
 
 
 def overlay_manifest(engine, sky):
@@ -180,8 +182,8 @@ def overlay_gradle(engine):
     text = path.read_text(encoding="utf-8")
     text = replace(text, 'applicationId "org.angelauramc.amethyst"',
                    'applicationId "' + PKG + '"')
-    text = replace(text, "versionCode 10000000", "versionCode 8")
-    text = replace(text, "versionName getVersionName()", 'versionName "0.7.0-engine-alpha"')
+    text = replace(text, "versionCode 10000000", "versionCode 9")
+    text = replace(text, "versionName getVersionName()", 'versionName "0.8.0-engine-alpha"')
     text = replace(text, "minSdkVersion 21", "minSdkVersion 26")
     # The androidnsbypass AAR requires API >=36.1; pinned upstream
     # defaults to API 36, which fails :checkDebugAarMetadata.
