@@ -196,11 +196,11 @@ def overlay_gradle(engine):
     text = replace(text, "versionCode 10000000", "versionCode 10")
     text = replace(text, "versionName getVersionName()", 'versionName "0.9.0-engine-alpha"')
     text = replace(text, "minSdkVersion 21", "minSdkVersion 26")
-    # The androidnsbypass AAR requires API >=36.1; pinned upstream
-    # defaults to API 36, which fails :checkDebugAarMetadata.
-    text = re.sub(r"compileSdk\s*=\s*36\b", "compileSdk = 37", text)
+    # androidnsbypass requires API 36.1; compileSdk 37 is not available
+    # in the runner's SDK manager. AGP 9 supports minor API levels.
+    text = text.replace("compileSdk = 37",
+                        "compileSdk { version = release(36) { it.minorApiLevel = 1 } }")
 
-    # Keep compileSdk 37: androidnsbypass requires >36.0 and API 37 is installed by CI.
     text = replace(text, "applicationIdSuffix '.debug'",
                    "// Keep the same package identity for SkyLauncher Android")
     text = text.replace("org.angelauramc.amethyst", PKG)
