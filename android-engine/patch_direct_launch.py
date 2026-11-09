@@ -154,6 +154,25 @@ def patch_auto_installer_return(engine: Path):
                     "automatic JRE installation for game modloaders")
     source.write_text(txt, encoding="utf-8")
 
+    # The native JVM launcher normally kills the Android process after Java exits.
+    # Save its real exit status *before* that happens; code after launchJavaVM
+    # cannot reliably announce a successful modloader installation.
+    jre_utils = engine / "app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/utils/JREUtils.java"
+    jre_text = jre_utils.read_text(encoding="utf-8")
+    jre_text = patch_one(jre_text,
+        '        Logger.appendToLog("Java Exit code: " + exitCode);',
+        '''        Logger.appendToLog("Java Exit code: " + exitCode);
+        if (activity.getIntent().getBooleanExtra("skylauncher_auto_finish", false)) {
+            activity.getSharedPreferences("skylauncher_installer_exit",
+                    android.content.Context.MODE_PRIVATE)
+                    .edit()
+                    .putInt("last_exit_code", exitCode)
+                    .putLong("last_exit_at", System.currentTimeMillis())
+                    .commit();
+        }''',
+        "capture native modloader installer exit status before process termination")
+    jre_utils.write_text(jre_text, encoding="utf-8")
+
     java_util = engine / "app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/NewJREUtil.java"
     util_text = java_util.read_text(encoding="utf-8")
     util_text = patch_one(util_text,
