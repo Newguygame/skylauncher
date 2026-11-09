@@ -98,6 +98,7 @@ public final class SkyEngineLoaderInstaller extends Activity {
     }
 
     private void fail(String why) {
+        LogBook.write(this, "Modloader installation failed: " + why);
         preparing.set(false);
         runOnUiThread(() -> {
             if (isFinishing() || cancelled || completed) return;
@@ -303,7 +304,12 @@ public final class SkyEngineLoaderInstaller extends Activity {
         super.onActivityResult(request, result, data);
         if (request != INSTALL_REQUEST || !waitingForGuiInstaller) return;
         waitingForGuiInstaller = false;
-        report("Checking the installed modloader...");
+        int nativeExit = getSharedPreferences("skylauncher_installer_exit", MODE_PRIVATE)
+                .getInt("last_exit_code", Integer.MIN_VALUE);
+        if (nativeExit != Integer.MIN_VALUE) {
+            LogBook.write(this, "Native modloader installer Java exit code: " + nativeExit);
+        }
+        report("Checking the installed modloader and its generated Minecraft client...");
         // The installer can be closed without completing; verify the resulting
         // version descriptor before allowing Direct Play.
         verifyAndLaunch();
@@ -311,7 +317,7 @@ public final class SkyEngineLoaderInstaller extends Activity {
 
     private void verifyAndLaunch() {
         if (cancelled || completed || isFinishing()) return;
-        report("Verifying " + loaderName() + " installation...");
+        report("Verifying " + loaderName() + " installation and Minecraft client artifacts...");
         new Thread(() -> {
             try {
                 if (!profile.id.equals(ProfileStore.active(this).id)) {
