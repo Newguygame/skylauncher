@@ -172,6 +172,10 @@ def overlay_gradle(engine):
     text = replace(text, "versionCode 10000000", "versionCode 6")
     text = replace(text, "versionName getVersionName()", 'versionName "0.5.0-engine-alpha"')
     text = replace(text, "minSdkVersion 21", "minSdkVersion 26")
+    # The androidnsbypass AAR requires API >=36.1; pinned upstream
+    # defaults to API 36, which fails :checkDebugAarMetadata.
+    text = re.sub(r"compileSdk\\s*=\\s*36\\b", "compileSdk = 37", text)
+
     text = replace(text, "compileSdk = 37", "compileSdk = 36")
     text = replace(text, "applicationIdSuffix '.debug'",
                    "// Keep the same package identity for SkyLauncher Android")
