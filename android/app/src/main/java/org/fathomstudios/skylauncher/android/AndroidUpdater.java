@@ -25,7 +25,7 @@ import java.util.Locale;
  */
 final class AndroidUpdater {
     private static final String RELEASE_API =
-            "https://api.github.com/repos/Newguygame/skylauncher/releases/latest";
+            "https://api.github.com/repos/Newguygame/skylauncher/releases?per_page=30";
     private static final long MAX_APK_BYTES = 260L * 1024L * 1024L;
 
     static final class Release {
@@ -49,17 +49,22 @@ final class AndroidUpdater {
     static void check(Activity activity, Result<Release> callback) {
         new Thread(() -> {
             try {
-                JSONObject json = new JSONObject(readJson(RELEASE_API));
-                JSONArray assets = json.optJSONArray("assets");
+                JSONArray releases = new JSONArray(readJson(RELEASE_API));
                 Release release = null;
-                if (assets != null) {
+                for (int ri = 0; ri < releases.length() && release == null; ri++) {
+                    JSONObject json = releases.getJSONObject(ri);
+                    String tag = json.optString("tag_name", "");
+                    if (!tag.startsWith("android-v") || json.optBoolean("draft")
+                            || json.optBoolean("prerelease")) continue;
+                    JSONArray assets = json.optJSONArray("assets");
+                    if (assets == null) continue;
                     for (int i = 0; i < assets.length(); i++) {
                         JSONObject asset = assets.getJSONObject(i);
                         String name = asset.optString("name", "").toLowerCase(Locale.ROOT);
                         if (!name.endsWith(".apk") || !name.contains("skylauncher")
                                 || !name.contains("android")) continue;
                         release = new Release();
-                        release.tag = json.optString("tag_name", "");
+                        release.tag = tag;
                         release.assetUrl = asset.getString("browser_download_url");
                         release.size = asset.optLong("size", -1);
                         String digest = asset.optString("digest", "");
