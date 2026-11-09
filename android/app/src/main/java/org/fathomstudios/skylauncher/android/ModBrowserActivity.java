@@ -164,6 +164,7 @@ public final class ModBrowserActivity extends Activity {
                 getContentResolver().takePersistableUriPermission(folder,
                         Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
                 ModFolderManager.setSelectedRoot(this, folder);
+                LogBook.write(this, "Mods-map via toegang geselecteerd");
                 refreshFolder();
                 refreshInstalled();
             } catch (Exception error) {
@@ -196,6 +197,7 @@ public final class ModBrowserActivity extends Activity {
             toggle.setOnClickListener(v -> {
                 try {
                     ModFolderManager.toggle(entry);
+                    LogBook.write(this, "Modstatus gewijzigd: " + entry.name);
                     refreshInstalled();
                 } catch (Exception e) {
                     status.setText("Mod wijzigen mislukt: " + e.getMessage());
@@ -209,6 +211,7 @@ public final class ModBrowserActivity extends Activity {
                     .setPositiveButton("Verwijderen", (dialog, which) -> {
                         try {
                             ModFolderManager.delete(entry);
+                            LogBook.write(this, "Mod verwijderd: " + entry.name);
                             refreshInstalled();
                         } catch (Exception e) {
                             status.setText("Verwijderen mislukt: " + e.getMessage());
@@ -272,6 +275,7 @@ public final class ModBrowserActivity extends Activity {
         new Thread(() -> {
             try {
                 ModrinthClient.install(this, mod, gameVersion, loader);
+                LogBook.write(this, "Mod geïnstalleerd: " + mod.title);
                 runOnUiThread(() -> {
                     status.setText(mod.title + " geïnstalleerd in de gedetecteerde mods-map.");
                     refreshInstalled();
