@@ -10,7 +10,7 @@ import argparse
 import re
 import shutil
 from pathlib import Path
-from patch_direct_launch import patch_engine_startup, patch_auto_installer_return, patch_cacio_bootclasspath
+from patch_direct_launch import patch_engine_startup, patch_auto_installer_return, patch_cacio_bootclasspath, patch_modded_minecraft_classpath
 from patch_english import patch_skylauncher_java, force_native_english
 
 PKG = "org.fathomstudios.skylauncher.android"
@@ -224,6 +224,7 @@ if __name__ == "__main__":
     patch_engine_startup(upstream)
     patch_auto_installer_return(upstream)
     patch_cacio_bootclasspath(upstream)
+    patch_modded_minecraft_classpath(upstream)
     force_native_english(upstream)
     overlay_manifest(upstream, sky)
     overlay_gradle(upstream)
