@@ -135,7 +135,32 @@ def patch_auto_installer_return(engine: Path):
 """
     txt = patch_one(txt, anchor, inserted + anchor,
                     "version-aware modloader Java runtime")
+    # Download Java 17/21 when a modern loader requires it, instead of
+    # launching its installer with the bundled Java 8.
+    before_select = "            Runtime selectedRuntime;"
+    select_patch = """            int skyRequiredJava = getIntent().getIntExtra("skylauncher_java_requirement", 0);
+            if (skyRequiredJava > 0
+                    && MultiRTUtils.getNearestJreName(skyRequiredJava) == null) {
+                try {
+                    NewJREUtil.tryDownloadRuntime(this, skyRequiredJava);
+                } catch (RuntimeException installError) {
+                    finalErrorDialog("Could not install Java " + skyRequiredJava + ": "
+                            + installError.getMessage());
+                    return;
+                }
+            }
+"""
+    txt = patch_one(txt, before_select, select_patch + before_select,
+                    "automatic JRE installation for game modloaders")
     source.write_text(txt, encoding="utf-8")
+
+    java_util = engine / "app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/NewJREUtil.java"
+    util_text = java_util.read_text(encoding="utf-8")
+    util_text = patch_one(util_text,
+        "    private static void tryDownloadRuntime(Context activity, int javaVersion){",
+        "    public static void tryDownloadRuntime(Context activity, int javaVersion){",
+        "expose native Java runtime downloader to the integrated modloader")
+    java_util.write_text(util_text, encoding="utf-8")
 
 
 def patch_cacio_bootclasspath(engine: Path):
