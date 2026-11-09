@@ -293,6 +293,7 @@ final class SkyPackInstaller {
             String gameVersion = mc.getString("version");
             JSONArray loaders = mc.optJSONArray("modLoaders");
             String loader = "Vanilla";
+            String pinnedLoaderVersion = "";
             if (loaders != null && loaders.length() > 0) {
                 JSONObject primary = loaders.getJSONObject(0);
                 for (int i = 0; i < loaders.length(); i++) {
@@ -300,6 +301,8 @@ final class SkyPackInstaller {
                     if (item.optBoolean("primary", false)) { primary = item; break; }
                 }
                 String id = primary.optString("id").toLowerCase(Locale.ROOT);
+                int separator = id.indexOf('-');
+                if (separator >= 0) pinnedLoaderVersion = id.substring(separator + 1);
                 if (id.startsWith("neoforge-")) loader = "NeoForge";
                 else if (id.startsWith("forge-")) loader = "Forge";
                 else if (id.startsWith("fabric-")) loader = "Fabric";
@@ -349,6 +352,7 @@ final class SkyPackInstaller {
                 throw new IOException("The selected profile changed before metadata update.");
             selected.version = gameVersion;
             selected.loader = loaderIndex(loader);
+            selected.loaderVersion = pinnedLoaderVersion;
             ProfileStore.upsert(ctx, selected);
             progress.completed("CurseForge pack installed: " + requiredCount
                     + " mods plus overrides. Select Play; SkyLauncher will set up "
@@ -383,6 +387,7 @@ final class SkyPackInstaller {
                 throw new IOException("The selected profile changed before metadata update.");
             selected.version = "1.21.1";
             selected.loader = loaderIndex("NeoForge");
+            selected.loaderVersion = "";
             ProfileStore.upsert(ctx, selected);
             progress.completed("Fathom Studios Minecraft pack installed (" + jars.length
                     + " client mods). Profile set to Minecraft 1.21.1 / NeoForge. "
@@ -554,10 +559,12 @@ final class SkyPackInstaller {
                 if (!minecraft.matches("[A-Za-z0-9_.-]{1,64}"))
                     throw new IOException("Invalid Minecraft version in pack.");
                 String loader = "Vanilla";
+                String pinnedLoaderVersion = "";
                 int foundLoaders = 0;
                 for (String id : new String[]{"neoforge", "forge", "fabric-loader", "quilt-loader"}) {
                     if (dependencies.has(id)) {
                         foundLoaders++;
+                        pinnedLoaderVersion = dependencies.getString(id);
                         loader = id.equals("neoforge") ? "NeoForge" : id.equals("forge")
                                 ? "Forge" : id.equals("fabric-loader") ? "Fabric" : "Quilt";
                     }
@@ -613,6 +620,7 @@ final class SkyPackInstaller {
                     throw new IOException("Active profile changed.");
                 selected.version = minecraft;
                 selected.loader = loaderIndex(loader);
+                selected.loaderVersion = pinnedLoaderVersion;
                 ProfileStore.upsert(ctx, selected);
                 progress.completed("Modrinth pack installed: " + files.length()
                         + " entries. Minecraft " + minecraft + " / " + loader
