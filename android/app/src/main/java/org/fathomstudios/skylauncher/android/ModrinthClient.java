@@ -1,13 +1,10 @@
 package org.fathomstudios.skylauncher.android;
 
 import android.content.Context;
-import android.net.Uri;
-import androidx.documentfile.provider.DocumentFile;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
-import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
@@ -93,7 +90,7 @@ final class ModrinthClient {
         return mods;
     }
 
-    static void install(Context context, Uri folder, Mod mod,
+    static void install(Context context, Mod mod,
                         String minecraft, String loader) throws Exception {
         if ("vanilla".equalsIgnoreCase(loader)) {
             throw new Exception("Mods vereisen een modloader zoals NeoForge, Fabric of Forge.");
@@ -154,20 +151,6 @@ final class ModrinthClient {
         if (!digest.toString().equalsIgnoreCase(sha512))
             throw new Exception("Bestand is afgekeurd: SHA-512-controle mislukt.");
 
-        DocumentFile directory = DocumentFile.fromTreeUri(context, folder);
-        if (directory == null || !directory.canWrite())
-            throw new Exception("Geen schrijfrechten voor de gekozen mods-map.");
-        DocumentFile existing = directory.findFile(filename);
-        if (existing != null) throw new Exception("Deze mod staat al in de gekozen map: " + filename);
-        DocumentFile target = directory.createFile("application/java-archive", filename);
-        if (target == null) throw new Exception("Kon het modbestand niet aanmaken.");
-        try (OutputStream output = context.getContentResolver().openOutputStream(target.getUri(), "w")) {
-            if (output == null) throw new Exception("Kan de gekozen mods-map niet beschrijven.");
-            output.write(data);
-            output.flush();
-        } catch (Exception e) {
-            target.delete();
-            throw e;
-        }
+        ModFolderManager.save(context, filename, data);
     }
 }
