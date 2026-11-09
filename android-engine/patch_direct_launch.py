@@ -163,6 +163,64 @@ def patch_auto_installer_return(engine: Path):
     java_util.write_text(util_text, encoding="utf-8")
 
 
+
+def patch_modded_minecraft_classpath(engine: Path):
+    """Put the generated Forge/NeoForge Minecraft client on the JVM classpath.
+
+    Current NeoForge client installers create a *-client.jar in libraries/,
+    not versions/<loader>/<loader>.jar. Using that nonexistent version JAR
+    launches FML without the Minecraft module, causing [MISSING] minecraft
+    and NoClassDefFoundError: LoadingOverlay.
+    """
+    source = engine / "app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/Tools.java"
+    txt = source.read_text(encoding="utf-8")
+    signature = "    public static String generateLaunchClasspath(JMinecraftVersionList.Version info, String actualname) {"
+    helper = """    private static String skylauncherResolveClientJar(JMinecraftVersionList.Version info,
+                                                       String installedVersion) {
+        if (installedVersion.startsWith("neoforge-")) {
+            String loaderVersion = installedVersion.substring("neoforge-".length());
+            File patchedClient = new File(DIR_HOME_LIBRARY, "net/neoforged/neoforge/"
+                    + loaderVersion + "/neoforge-" + loaderVersion + "-client.jar");
+            if (!patchedClient.isFile() || patchedClient.length() < 4096) {
+                throw new IllegalStateException("NeoForge " + loaderVersion
+                        + " is missing its generated Minecraft client JAR: "
+                        + patchedClient.getName()
+                        + ". Reinstall NeoForge using SkyLauncher; a version JSON alone is not enough.");
+            }
+            return patchedClient.getAbsolutePath();
+        }
+
+        if (installedVersion.startsWith("forge-")) {
+            String loaderVersion = installedVersion.substring("forge-".length());
+            File patchedClient = new File(DIR_HOME_LIBRARY, "net/minecraftforge/forge/"
+                    + loaderVersion + "/forge-" + loaderVersion + "-client.jar");
+            if (patchedClient.isFile() && patchedClient.length() >= 4096)
+                return patchedClient.getAbsolutePath();
+        }
+
+        File installedClient = new File(getClientClasspath(installedVersion));
+        if (installedClient.isFile()) return installedClient.getAbsolutePath();
+
+        // Fabric and Quilt typically inherit the Minecraft vanilla client.
+        if (info.inheritsFrom != null && !info.inheritsFrom.isEmpty()) {
+            File parentClient = new File(getClientClasspath(info.inheritsFrom));
+            if (parentClient.isFile()) return parentClient.getAbsolutePath();
+        }
+
+        throw new IllegalStateException("Minecraft client JAR is missing for "
+                + installedVersion + ". Reinstall the selected Minecraft version.");
+    }
+
+"""
+    txt = patch_one(txt, signature, helper + signature,
+                    "Minecraft client JAR resolver")
+    txt = patch_one(txt,
+                    "        launchClasspath.append(getClientClasspath(actualname));",
+                    "        launchClasspath.append(skylauncherResolveClientJar(info, actualname));",
+                    "Minecraft client classpath entry")
+    source.write_text(txt, encoding="utf-8")
+
+
 def patch_cacio_bootclasspath(engine: Path):
     """Avoid passing an invalid empty -Xbootclasspath/p or /a VM argument."""
     source = engine / "app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/Tools.java"
