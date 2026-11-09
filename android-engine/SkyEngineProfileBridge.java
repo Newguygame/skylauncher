@@ -196,18 +196,9 @@ public final class SkyEngineProfileBridge {
             intent.putExtra(EXTRA_PROFILE_NAME, profile.name);
             activity.startActivity(intent);
         } catch (MissingModloaderException e) {
-            new AlertDialog.Builder(activity)
-                    .setTitle("Modloader ontbreekt")
-                    .setMessage("Voor profiel '" + profile.name + "' is "
-                            + ProfileStore.LOADERS[profile.loader]
-                            + " voor Minecraft " + profile.version
-                            + " nog niet geïnstalleerd in de geïntegreerde engine. "
-                            + "De game start niet als vanilla. Je kunt de modloader "
-                            + "eenmalig installeren via de engine-instellingen.")
-                    .setPositiveButton("Modloader installeren", (dialog, which) ->
-                            activity.startActivity(new Intent(activity, TestStorageActivity.class)))
-                    .setNegativeButton("Annuleren", null)
-                    .show();
+            Intent install = new Intent(activity, SkyEngineLoaderInstaller.class);
+            install.putExtra(SkyEngineLoaderInstaller.EXTRA_PROFILE_ID, profile.id);
+            activity.startActivity(install);
         } catch (Exception e) {
             LogBook.write(activity, "Engineprofiel fout: " + e.getClass().getSimpleName());
             new AlertDialog.Builder(activity)
