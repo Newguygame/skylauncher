@@ -22,6 +22,10 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"/>
         </provider>
+        <activity android:name=".ProfilesActivity" android:exported="false"/>
+        <activity android:name=".SettingsActivity" android:exported="false"/>
+        <activity android:name=".ToolsActivity" android:exported="false"/>
+        <activity android:name=".ModpacksActivity" android:exported="false"/>
         <activity android:name=".ModBrowserActivity" android:exported="false"/>
         <activity android:name=".MainActivity"
             android:exported="true"
