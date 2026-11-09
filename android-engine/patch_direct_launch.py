@@ -167,10 +167,9 @@ def patch_auto_installer_return(engine: Path):
 def patch_modded_minecraft_classpath(engine: Path):
     """Put the generated Forge/NeoForge Minecraft client on the JVM classpath.
 
-    Current NeoForge client installers create a *-client.jar in libraries/,
-    not versions/<loader>/<loader>.jar. Using that nonexistent version JAR
-    launches FML without the Minecraft module, causing [MISSING] minecraft
-    and NoClassDefFoundError: LoadingOverlay.
+    NeoForge needs the generated client-<mc>-<neoform>-srg.jar from
+    libraries/net/minecraft/client/. It contains mapped Minecraft classes,
+    unlike the NeoForge patch-only *-client.jar.
     """
     source = engine / "app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/Tools.java"
     txt = source.read_text(encoding="utf-8")
@@ -178,16 +177,23 @@ def patch_modded_minecraft_classpath(engine: Path):
     helper = """    private static String skylauncherResolveClientJar(JMinecraftVersionList.Version info,
                                                        String installedVersion) {
         if (installedVersion.startsWith("neoforge-")) {
-            String loaderVersion = installedVersion.substring("neoforge-".length());
-            File patchedClient = new File(DIR_HOME_LIBRARY, "net/neoforged/neoforge/"
-                    + loaderVersion + "/neoforge-" + loaderVersion + "-client.jar");
-            if (!patchedClient.isFile() || patchedClient.length() < 4096) {
-                throw new IllegalStateException("NeoForge " + loaderVersion
-                        + " is missing its generated Minecraft client JAR: "
-                        + patchedClient.getName()
-                        + ". Reinstall NeoForge using SkyLauncher; a version JSON alone is not enough.");
+            // NeoForge's production client provider consumes client-<mc>-<neoform>-srg.jar.
+            // neoforge-<loader>-client.jar contains patches but is NOT a
+            // replacement for Minecraft's complete mapped (SRG) client.
+            String mcVersion = info.inheritsFrom;
+            if (mcVersion == null || mcVersion.isEmpty()) {
+                throw new IllegalStateException("NeoForge Minecraft base version is missing.");
             }
-            return patchedClient.getAbsolutePath();
+            try {
+                File mappedClient = org.fathomstudios.skylauncher.android
+                        .SkyEngineClientArtifacts.requireNeoForgeClient(mcVersion, installedVersion);
+                Logger.appendToLog("SkyLauncher NeoForge client: "
+                        + mappedClient.getAbsolutePath());
+                return mappedClient.getAbsolutePath();
+            } catch (Exception invalid) {
+                throw new IllegalStateException("NeoForge Minecraft client is incomplete: "
+                        + invalid.getMessage(), invalid);
+            }
         }
 
         if (installedVersion.startsWith("forge-")) {
