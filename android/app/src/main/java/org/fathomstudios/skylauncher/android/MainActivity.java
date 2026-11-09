@@ -46,7 +46,12 @@ public final class MainActivity extends Activity {
     private File pendingAmethystApk;
     private boolean downloadingAmethyst;
     private String lastProfileId = "";
+    private String lastProfileSnapshot = "";
     private String lastSettings = "";
+    private String profileSnapshot(ProfileStore.Profile p) {
+        return p.id + "|" + p.name + "|" + p.version + "|" + p.loader
+                + "|" + p.engine + "|" + p.ramMb + "|" + p.folderUri;
+    }
 
     private int accent() { return SettingsActivity.accent(prefs); }
     private String settingsSnapshot() {
@@ -126,6 +131,7 @@ public final class MainActivity extends Activity {
     private void render() {
         ProfileStore.Profile profile = ProfileStore.active(this);
         lastProfileId = profile.id;
+        lastProfileSnapshot = profileSnapshot(profile);
         lastSettings = settingsSnapshot();
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -291,6 +297,7 @@ public final class MainActivity extends Activity {
         String version = versionInput.getText().toString().trim();
         if (!version.isEmpty()) profile.version = version;
         ProfileStore.upsert(this, profile);
+        lastProfileSnapshot = profileSnapshot(profile);
     }
 
     private int recommendedJava(String version) {
@@ -368,7 +375,7 @@ public final class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         if (prefs != null && !lastProfileId.isEmpty()
-                && (!lastProfileId.equals(ProfileStore.active(this).id)
+                && (!lastProfileSnapshot.equals(profileSnapshot(ProfileStore.active(this)))
                 || !lastSettings.equals(settingsSnapshot()))) {
             render();
         }
