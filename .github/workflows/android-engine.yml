@@ -56,8 +56,8 @@ jobs:
             exit 1
           fi
           echo "Using $SDKMANAGER"
-          yes | "$SDKMANAGER" "platforms;android-37" "build-tools;36.0.0" "ndk;27.3.13750724" || true
-          test -f "$ANDROID_HOME/platforms/android-37/android.jar"
+          yes | "$SDKMANAGER" "platforms;android-36.1" "build-tools;36.0.0" "ndk;27.3.13750724" || true
+          test -f "$ANDROID_HOME/platforms/android-36.1/android.jar"
           test -d "$ANDROID_HOME/ndk/27.3.13750724"
 
       - name: Get engine's OpenJDK 8 runtime from upstream's public CI
