@@ -96,6 +96,8 @@ def overlay_java(engine, sky):
         if name == "ModFolderManager":
             block = '''        // No sandbox bypass: this game engine lives inside this very APK.
         try {
+            SkyEngineProfileBridge.prepareForModManagement(
+                    context, ProfileStore.active(context));
             net.kdt.pojavlaunch.Tools.initStorageConstants(context);
             net.kdt.pojavlaunch.value.launcherprofiles.LauncherProfiles.load();
             net.kdt.pojavlaunch.value.launcherprofiles.MinecraftProfile selected =
