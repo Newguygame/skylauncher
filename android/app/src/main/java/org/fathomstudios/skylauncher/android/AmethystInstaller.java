@@ -44,7 +44,7 @@ final class AmethystInstaller {
                 if (directory == null || (!directory.exists() && !directory.mkdirs())) {
                     throw new Exception("App-opslag voor downloads is niet beschikbaar.");
                 }
-                temporary = new File(directory, "Amethyst.partial");
+                temporary = new File(directory, "Amethyst.pending.apk");
                 File destination = new File(directory, "Amethyst.apk");
                 if (temporary.exists() && !temporary.delete()) {
                     throw new Exception("Oude tijdelijke download kon niet worden verwijderd.");
