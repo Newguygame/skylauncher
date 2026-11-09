@@ -69,8 +69,16 @@ final class ModrinthClient {
     }
 
     static List<Mod> search(String query, String minecraft, String loader) throws Exception {
+        return searchProjects(query, minecraft, loader, "mod");
+    }
+
+    static List<Mod> searchModpacks(String query, String minecraft, String loader) throws Exception {
+        return searchProjects(query, minecraft, loader, "modpack");
+    }
+
+    private static List<Mod> searchProjects(String query, String minecraft, String loader, String kind) throws Exception {
         JSONArray facets = new JSONArray()
-                .put(new JSONArray().put("project_type:mod"))
+                .put(new JSONArray().put("project_type:" + kind))
                 .put(new JSONArray().put("versions:" + minecraft));
         if (!"vanilla".equalsIgnoreCase(loader)) {
             facets.put(new JSONArray().put("categories:" + loader.toLowerCase(Locale.ROOT)));
