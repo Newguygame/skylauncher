@@ -184,11 +184,14 @@ def patch_auto_installer_return(engine: Path):
 
 
 def patch_modded_minecraft_classpath(engine: Path):
-    """Put the generated Forge/NeoForge Minecraft client on the JVM classpath.
+    """Avoid adding NeoForge's SRG client twice to the Java module graph.
 
-    NeoForge needs the generated client-<mc>-<neoform>-srg.jar from
-    libraries/net/minecraft/client/. It contains mapped Minecraft classes,
-    unlike the NeoForge patch-only *-client.jar.
+    NeoForge's production client provider explicitly discovers
+    client-<mc>-<neoform>-srg.jar as the *minecraft* module. Adding the same
+    JAR to -cp additionally registers it as automatic module *client*, so
+    Java throws ResolutionException: Modules minecraft and client export
+    package net.minecraft.*. Validate the artifacts, then let NeoForge's
+    provider own Minecraft. Never add the mapped client directly to -cp.
     """
     source = engine / "app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/Tools.java"
     txt = source.read_text(encoding="utf-8")
@@ -196,9 +199,6 @@ def patch_modded_minecraft_classpath(engine: Path):
     helper = """    private static String skylauncherResolveClientJar(JMinecraftVersionList.Version info,
                                                        String installedVersion) {
         if (installedVersion.startsWith("neoforge-")) {
-            // NeoForge's production client provider consumes client-<mc>-<neoform>-srg.jar.
-            // neoforge-<loader>-client.jar contains patches but is NOT a
-            // replacement for Minecraft's complete mapped (SRG) client.
             String mcVersion = info.inheritsFrom;
             if (mcVersion == null || mcVersion.isEmpty()) {
                 throw new IllegalStateException("NeoForge Minecraft base version is missing.");
@@ -206,9 +206,13 @@ def patch_modded_minecraft_classpath(engine: Path):
             try {
                 File mappedClient = org.fathomstudios.skylauncher.android
                         .SkyEngineClientArtifacts.requireNeoForgeClient(mcVersion, installedVersion);
-                Logger.appendToLog("SkyLauncher NeoForge client: "
+                Logger.appendToLog("SkyLauncher NeoForge SRG client verified for native provider: "
                         + mappedClient.getAbsolutePath());
-                return mappedClient.getAbsolutePath();
+                // DO NOT add SRG game JAR to Java's application classpath:
+                // the NeoForge production client provider registers it as
+                // module 'minecraft' during mod discovery. A second copy
+                // becomes automatic module 'client' and makes JPMS fail.
+                return null;
             } catch (Exception invalid) {
                 throw new IllegalStateException("NeoForge Minecraft client is incomplete: "
                         + invalid.getMessage(), invalid);
@@ -226,7 +230,7 @@ def patch_modded_minecraft_classpath(engine: Path):
         File installedClient = new File(getClientClasspath(installedVersion));
         if (installedClient.isFile()) return installedClient.getAbsolutePath();
 
-        // Fabric and Quilt typically inherit the Minecraft vanilla client.
+        // Fabric and Quilt typically inherit the vanilla client JAR.
         if (info.inheritsFrom != null && !info.inheritsFrom.isEmpty()) {
             File parentClient = new File(getClientClasspath(info.inheritsFrom));
             if (parentClient.isFile()) return parentClient.getAbsolutePath();
@@ -240,9 +244,12 @@ def patch_modded_minecraft_classpath(engine: Path):
     txt = patch_one(txt, signature, helper + signature,
                     "Minecraft client JAR resolver")
     txt = patch_one(txt,
-                    "        launchClasspath.append(getClientClasspath(actualname));",
-                    "        launchClasspath.append(skylauncherResolveClientJar(info, actualname));",
-                    "Minecraft client classpath entry")
+                    '        launchClasspath.append(libClasspath).append(":");\n'
+                    '        launchClasspath.append(getClientClasspath(actualname));',
+                    '        launchClasspath.append(libClasspath);\n'
+                    '        String skyClientJar = skylauncherResolveClientJar(info, actualname);\n'
+                    '        if (skyClientJar != null) launchClasspath.append(":").append(skyClientJar);',
+                    "NeoForge SRG client must not be duplicated on application classpath")
     source.write_text(txt, encoding="utf-8")
 
 
