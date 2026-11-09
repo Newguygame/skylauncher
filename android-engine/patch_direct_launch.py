@@ -93,3 +93,25 @@ def patch_engine_startup(engine: Path):
     txt = patch_one(txt, "    @Override\n    protected void onResume() {",
                     launch + "    @Override\n    protected void onResume() {", "direct launch handler")
     activity.write_text(txt, encoding="utf-8")
+
+
+def patch_auto_installer_return(engine: Path):
+    """Make the native JAR installer return control after the Java VM exits.
+
+    The modloader Activity verifies the actual installed Minecraft version
+    before allowing direct game launch; closing an installer without success
+    never causes a vanilla fallback.
+    """
+    source = engine / "app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/JavaGUILauncherActivity.java"
+    txt = source.read_text(encoding="utf-8")
+    old = "            JREUtils.launchJavaVM(this, runtime,null,javaArgList, LauncherPreferences.PREF_CUSTOM_JAVA_ARGS);"
+    new = old + """
+            if (getIntent().getBooleanExtra("skylauncher_auto_finish", false)) {
+                runOnUiThread(() -> {
+                    setResult(RESULT_OK);
+                    finish();
+                });
+            }"""
+    txt = patch_one(txt, old, new, "finish native modloader installer after Java exits")
+    source.write_text(txt, encoding="utf-8")
+
