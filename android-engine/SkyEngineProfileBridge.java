@@ -57,7 +57,7 @@ public final class SkyEngineProfileBridge {
         MinecraftProfile target = map.get(profile.id);
         if (target == null) {
             target = MinecraftProfile.createTemplate();
-            target.gameDir = "skylauncher-profiles/" + profile.id; // isolated mods/worlds for new SkyLauncher profiles
+            target.gameDir = chooseGameDir(ctx, profile, map); // preserve existing game directory on first migration
         }
         target.name = profile.name;
         target.lastVersionId = actualVersion;
@@ -91,7 +91,7 @@ public final class SkyEngineProfileBridge {
         MinecraftProfile nativeProfile = profiles.get(profile.id);
         if (nativeProfile == null) {
             nativeProfile = MinecraftProfile.createTemplate();
-            nativeProfile.gameDir = "skylauncher-profiles/" + profile.id;
+            nativeProfile.gameDir = chooseGameDir(ctx, profile, profiles);
             nativeProfile.lastVersionId = profile.version;
         }
         nativeProfile.name = profile.name;
@@ -100,6 +100,30 @@ public final class SkyEngineProfileBridge {
         LauncherPreferences.DEFAULT_PREF.edit()
                 .putString(LauncherPreferences.PREF_KEY_CURRENT_PROFILE, profile.id)
                 .apply();
+    }
+
+    /** First SkyLauncher profile reuses the already-selected engine game directory
+     *  so that worlds/mods installed in 0.5 remain visible after the update.
+     *  Newly created second/third profiles use isolated subdirectories.
+     */
+    private static String chooseGameDir(Context ctx, ProfileStore.Profile selected,
+                                        Map<String, MinecraftProfile> engineProfiles) {
+        boolean existingSkyMapping = false;
+        for (ProfileStore.Profile sky : ProfileStore.all(ctx)) {
+            if (engineProfiles.containsKey(sky.id)) {
+                existingSkyMapping = true;
+                break;
+            }
+        }
+        if (!existingSkyMapping) {
+            String lastSelected = LauncherPreferences.DEFAULT_PREF.getString(
+                    LauncherPreferences.PREF_KEY_CURRENT_PROFILE, "");
+            MinecraftProfile oldProfile = engineProfiles.get(lastSelected);
+            if (oldProfile != null && !lastSelected.equals(selected.id)) {
+                return oldProfile.gameDir; // null means upstream's default .minecraft directory
+            }
+        }
+        return "skylauncher-profiles/" + selected.id;
     }
 
     private static long getDeviceTotalRamMb(Context ctx) {
