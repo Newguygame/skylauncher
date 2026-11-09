@@ -19,9 +19,9 @@ import java.util.List;
 public final class ModpacksActivity extends Activity {
     private static final int PICK_CURSEFORGE_ZIP = 719;
     private LinearLayout results, curseResults;
-    private TextView status, installationStatus, currentProfile;
+    private TextView status, installationStatus, currentProfile, updateStatus;
     private EditText searchBox, curseQuery, relayBox;
-    private Button fathomButton, zipButton, curseSearch;
+    private Button fathomButton, zipButton, curseSearch, updateButton, applyUpdateButton;
     private volatile boolean busy;
     private volatile boolean cancelRequested;
     private int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
@@ -157,7 +157,7 @@ public final class ModpacksActivity extends Activity {
 
         LinearLayout modrinth = section(root, "Modrinth Modpacks");
         add(modrinth, text("Browse modpacks compatible with the current version "
-                + "and modloader. Native .mrpack installation is not supported yet.",
+                + "and modloader. Install a verified .mrpack directly into your active profile.",
                 14, 0xffc0d1e3), 10);
         searchBox = entry("Search Modrinth modpacks", "");
         add(modrinth, searchBox, 9);
@@ -170,6 +170,20 @@ public final class ModpacksActivity extends Activity {
         results.setOrientation(LinearLayout.VERTICAL);
         add(modrinth, results, 10);
 
+        LinearLayout updates = section(root, "Installed Pack Updates");
+        add(updates, text("SkyLauncher checks your pack's original source. "
+                + "Download an update when a newer release is published. "
+                + "Worlds and personal files are preserved; pack replacements are backed up.",
+                14, 0xffc0d1e3), 9);
+        updateStatus = text("Checking installed modpack...", 14, 0xffc0d1e3);
+        add(updates, updateStatus, 9);
+        updateButton = button("Check for pack updates");
+        updateButton.setOnClickListener(v -> checkPackUpdates());
+        add(updates, updateButton, 8);
+        applyUpdateButton = button("Install available pack update");
+        applyUpdateButton.setEnabled(false);
+        add(updates, applyUpdateButton, 8);
+
         installationStatus = text("Ready to install a pack.", 14, 0xffc0d1e3);
         add(root, installationStatus, 13);
         Button cancel = button("Cancel active pack download");
@@ -180,6 +194,7 @@ public final class ModpacksActivity extends Activity {
         add(root, cancel, 14);
         setContentView(scroll);
         showCurrentProfile();
+        checkPackUpdates();
     }
 
     private void showCurrentProfile() {
@@ -239,6 +254,7 @@ public final class ModpacksActivity extends Activity {
                     fathomButton.setEnabled(true);
                     curseSearch.setEnabled(true);
                     zipButton.setEnabled(true);
+                    checkPackUpdates();
                 });
             }
         }, "SkyLauncher-Pack-Installer").start();
@@ -257,6 +273,64 @@ public final class ModpacksActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         showCurrentProfile();
+    }
+
+    private void checkPackUpdates() {
+        if (updateButton == null || busy) return;
+        updateButton.setEnabled(false);
+        applyUpdateButton.setEnabled(false);
+        updateStatus.setText("Checking installed modpack source...");
+        final String expectedProfile = ProfileStore.active(this).id;
+        new Thread(() -> {
+            try {
+                SkyPackUpdateStore.Record record = SkyPackUpdateStore.current(this);
+                if (record == null) {
+                    runOnUiThread(() -> {
+                        if (!isFinishing()) updateStatus.setText(
+                                "No tracked pack in this profile. Install one first.");
+                    });
+                    return;
+                }
+                if ("curseforge-import".equals(record.source)) {
+                    runOnUiThread(() -> {
+                        if (!isFinishing()) updateStatus.setText(
+                                "Imported CurseForge ZIP: install a new export to update.");
+                    });
+                    return;
+                }
+                String remote = SkyPackInstaller.remotePackVersion(this, record.source);
+                runOnUiThread(() -> {
+                    if (isFinishing() || !ProfileStore.active(this).id.equals(expectedProfile))
+                        return;
+                    if (remote.equals(record.version)) {
+                        updateStatus.setText(record.name + " is up to date.");
+                    } else {
+                        updateStatus.setText("Update available for " + record.name
+                                + ". The source published revision " + remote + ".");
+                        applyUpdateButton.setEnabled(true);
+                        applyUpdateButton.setOnClickListener(v -> new AlertDialog.Builder(this)
+                                .setTitle("Update " + record.name + "?")
+                                .setMessage("Download the newest pack from its original source "
+                                        + "and update only this Minecraft profile. "
+                                        + "Your worlds will be preserved.")
+                                .setPositiveButton("Update", (d, w) ->
+                                        beginTask(p -> SkyPackInstaller.updatePack(
+                                                this, record.source, p)))
+                                .setNegativeButton("Cancel", null).show());
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (!isFinishing()) updateStatus.setText("Update check failed: "
+                            + (e.getMessage() == null ? e.getClass().getSimpleName()
+                            : e.getMessage()));
+                });
+            } finally {
+                runOnUiThread(() -> {
+                    if (!isFinishing()) updateButton.setEnabled(true);
+                });
+            }
+        }, "SkyLauncher-Check-Pack-Updates").start();
     }
 
     private void searchCurseForge() {
@@ -321,6 +395,17 @@ public final class ModpacksActivity extends Activity {
                     for (ModrinthClient.Mod m : found) {
                         LinearLayout panel = section(results, m.title);
                         add(panel, text(m.description, 13, 0xffc0d1e3), 9);
+                        Button install = button("Install / Update Modrinth pack");
+                        install.setOnClickListener(v -> new AlertDialog.Builder(this)
+                                .setTitle("Install " + m.title + "?")
+                                .setMessage("Download the newest .mrpack and required "
+                                        + "mods into this profile. Existing replaced files "
+                                        + "will be backed up; worlds will be preserved.")
+                                .setPositiveButton("Install", (d, w) ->
+                                        beginTask(p -> SkyPackInstaller.installModrinthProject(
+                                                this, m.id, p)))
+                                .setNegativeButton("Cancel", null).show());
+                        add(panel, install, 8);
                         Button open = button("Open Modrinth pack details");
                         open.setOnClickListener(v -> startActivity(new Intent(
                                 Intent.ACTION_VIEW,
