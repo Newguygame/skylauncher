@@ -96,26 +96,31 @@ def overlay_java(engine, sky):
             java = java.replace('first.engine = p.getInt("engine", 0);', 'first.engine = 0;')
             java = java.replace('first.engine = p.getInt("engine", 1);', 'first.engine = 0;')
         if name == "ModFolderManager":
-            block = '''        // No sandbox bypass: this game engine lives inside this very APK.
+            java = method(java, "static Folder resolve(Context context) {", '''static Folder resolve(Context context) {
+        ProfileStore.Profile profile = ProfileStore.active(context);
         try {
-            SkyEngineProfileBridge.prepareForModManagement(
-                    context, ProfileStore.active(context));
-            net.kdt.pojavlaunch.Tools.initStorageConstants(context);
-            net.kdt.pojavlaunch.value.launcherprofiles.LauncherProfiles.load();
-            net.kdt.pojavlaunch.value.launcherprofiles.MinecraftProfile selected =
-                    net.kdt.pojavlaunch.value.launcherprofiles.LauncherProfiles.getCurrentProfile();
-            File mods = new File(net.kdt.pojavlaunch.Tools.getGameDirPath(selected), "mods");
-            if (mods.isDirectory() || mods.mkdirs()) {
-                return new Folder(null, mods, "Ingebouwde Minecraft-engine: " +
-                        mods.getAbsolutePath(), true);
+            File game = SkyEngineProfileBridge.gameDirectory(context, profile);
+            File mods = new File(game, "mods");
+            if (!mods.isDirectory() && !mods.mkdirs()) {
+                throw new IllegalStateException("Cannot create profile mods folder.");
             }
-        } catch (Exception ignored) {
-            // Game setup/profile may not exist yet; use own per-profile fallback.
+            return new Folder(null, mods, "SkyLauncher / " + profile.name
+                    + " / mods (isolated game directory)", false);
+        } catch (Exception error) {
+            LogBook.write(context, "Cannot open isolated mod folder: "
+                    + error.getClass().getSimpleName());
+            return new Folder(null, null, "Profile storage unavailable: "
+                    + error.getMessage(), false);
         }
-'''
-            java = replace(java,
-                "        // Always-available fallback: this app owns its own profile's mods directory.",
-                block + "        // Always-available fallback: this app owns its own profile's mods directory.")
+    }''')
+        if name == "ModBrowserActivity":
+            # Folder picking and automatic probing could select another profile's
+            # world/mods. In the bundled build, all mods are inside the current
+            # profile's private game folder; remove external folder chooser controls.
+            java = replace(java, 'add(root, choose, 8);',
+                           'choose.setVisibility(View.GONE);\n        add(root, choose, 8);')
+            java = replace(java, 'add(root, auto, 16);',
+                           'auto.setVisibility(View.GONE);\n        add(root, auto, 16);')
         (target_dir / (name + ".java")).write_text(java, encoding="utf-8")
     # Native runtime bridge only compiled into combined engine APK.
     shutil.copyfile(sky / "android-engine/SkyEngineProfileBridge.java",
@@ -124,6 +129,10 @@ def overlay_java(engine, sky):
                     target_dir / "SkyEngineLoaderInstaller.java")
     shutil.copyfile(sky / "android-engine/SkyPackInstaller.java",
                     target_dir / "SkyPackInstaller.java")
+    raw_dir = engine / "app_pojavlauncher/src/main/res/raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(sky / "android-engine/bridge-cert.pem",
+                    raw_dir / "skylauncher_bridge_cert.pem")
 
 
 def overlay_manifest(engine, sky):
@@ -182,8 +191,8 @@ def overlay_gradle(engine):
     text = path.read_text(encoding="utf-8")
     text = replace(text, 'applicationId "org.angelauramc.amethyst"',
                    'applicationId "' + PKG + '"')
-    text = replace(text, "versionCode 10000000", "versionCode 9")
-    text = replace(text, "versionName getVersionName()", 'versionName "0.8.0-engine-alpha"')
+    text = replace(text, "versionCode 10000000", "versionCode 10")
+    text = replace(text, "versionName getVersionName()", 'versionName "0.9.0-engine-alpha"')
     text = replace(text, "minSdkVersion 21", "minSdkVersion 26")
     # The androidnsbypass AAR requires API >=36.1; pinned upstream
     # defaults to API 36, which fails :checkDebugAarMetadata.
