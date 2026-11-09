@@ -30,11 +30,20 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.10.2'
-      - name: Check Android SDK
+          gradle-version: '8.13'
+      - name: Install Android API 36 SDK
         run: |
           echo "SDK at $ANDROID_HOME"
-          test -f "$ANDROID_HOME/platforms/android-35/android.jar" || sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          yes | sdkmanager "platforms;android-36" "build-tools;35.0.0" || true
+          test -f "$ANDROID_HOME/platforms/android-36/android.jar"
+      - name: Copy official desktop icon and wallpaper assets
+        run: |
+          mkdir -p android/app/src/main/res/drawable-nodpi
+          cp icons/SkyLauncher.png android/app/src/main/res/drawable-nodpi/skylauncher_desktop.png
+          first_wallpaper=$(find assets -maxdepth 1 -type f -iname 'background-*.jpg' | sort | head -n 1)
+          if [[ -n "$first_wallpaper" ]]; then
+            cp "$first_wallpaper" android/app/src/main/res/drawable-nodpi/skylauncher_bg.jpg
+          fi
       - name: Build SkyLauncher Android
         run: gradle -p android assembleDebug --no-daemon --stacktrace
       - name: Verify APK exists
