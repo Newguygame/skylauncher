@@ -10,6 +10,7 @@ import argparse
 import re
 import shutil
 from pathlib import Path
+from patch_direct_launch import patch_engine_startup
 
 PKG = "org.fathomstudios.skylauncher.android"
 CLASSES = [
@@ -199,6 +200,7 @@ if __name__ == "__main__":
     if not (upstream / "app_pojavlauncher/build.gradle").is_file():
         raise SystemExit("Amethyst engine checkout ontbreekt")
     overlay_java(upstream, sky)
+    patch_engine_startup(upstream)
     overlay_manifest(upstream, sky)
     overlay_gradle(upstream)
     print("SkyLauncher home + mods + profiles and native Minecraft engine share one APK.")
