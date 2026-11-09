@@ -153,6 +153,7 @@ public final class SkyEngineLoaderInstaller extends Activity {
                                     return;
                                 }
                                 report("Installing " + loaderName() + " in the built-in Java engine...");
+                                intent.putExtra("skylauncher_auto_finish", true);
                                 waitingForGuiInstaller = true;
                                 preparing.set(false);
                                 // This is an INTERNAL engine Activity, not Amethyst's
