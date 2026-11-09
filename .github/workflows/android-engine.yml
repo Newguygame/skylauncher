@@ -7,6 +7,12 @@ on:
       - 'android-engine/**'
       - '.github/workflows/android-engine.yml'
       - 'android/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'android-engine/**'
+      - '.github/workflows/android-engine.yml'
+      - 'android/**'
   workflow_dispatch:
 
 permissions:
