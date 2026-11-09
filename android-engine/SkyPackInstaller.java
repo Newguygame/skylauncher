@@ -259,11 +259,12 @@ final class SkyPackInstaller {
 
     static void installCurseForgeUri(Activity ctx, Uri selected, Progress progress)
             throws Exception {
+        String expectedProfileId = ProfileStore.active(ctx).id;
         File zip = new File(ctx.getCacheDir(), "sky-cf-import.zip");
         try (InputStream in = ctx.getContentResolver().openInputStream(selected)) {
             if (in == null) throw new IOException("Cannot open the selected modpack ZIP.");
             copyToFile(in, zip, MAX_ZIP_BYTES, progress);
-            installCurseForgeZip(ctx, zip, progress, ProfileStore.active(ctx).id);
+            installCurseForgeZip(ctx, zip, progress, expectedProfileId);
         } finally {
             zip.delete();
         }
@@ -339,6 +340,8 @@ final class SkyPackInstaller {
                         + " / " + loader + "...");
             }
             commitStage(ctx, stage, progress, expectedProfileId);
+            if (!selected.id.equals(expectedProfileId))
+                throw new IOException("The selected profile changed before metadata update.");
             selected.version = gameVersion;
             selected.loader = loaderIndex(loader);
             ProfileStore.upsert(ctx, selected);
@@ -370,6 +373,8 @@ final class SkyPackInstaller {
                     + " client mods and configuration files to your Minecraft profile...");
             commitStage(ctx, stage, progress, expectedProfileId);
             ProfileStore.Profile selected = ProfileStore.active(ctx);
+            if (!selected.id.equals(expectedProfileId))
+                throw new IOException("The selected profile changed before metadata update.");
             selected.version = "1.21.1";
             selected.loader = loaderIndex("NeoForge");
             ProfileStore.upsert(ctx, selected);
