@@ -48,7 +48,7 @@ public final class SkyEngineProfileBridge {
         ensureIsolatedEngineProfiles(ctx);
 
         String loader = ProfileStore.LOADERS[profile.loader].toLowerCase(Locale.ROOT);
-        String actualVersion = resolveGameVersion(profile.version, loader);
+        String actualVersion = resolveGameVersion(profile.version, loader, profile.loaderVersion);
         Map<String, MinecraftProfile> map = LauncherProfiles.mainProfileJson.profiles;
         MinecraftProfile target = map.get(profile.id);
         if (target == null) throw new IllegalStateException("Selected profile is missing from the Minecraft engine.");
@@ -191,7 +191,8 @@ public final class SkyEngineProfileBridge {
         return Math.max(512, info.totalMem / (1024 * 1024));
     }
 
-    private static String resolveGameVersion(String mc, String loader) throws Exception {
+    private static String resolveGameVersion(String mc, String loader,
+                                             String requestedLoaderVersion) throws Exception {
         if ("vanilla".equals(loader)) return mc;
 
         // For modded profiles, use an installed loader version belonging to this
@@ -218,6 +219,19 @@ public final class SkyEngineProfileBridge {
             }
             if (!id.toLowerCase(Locale.ROOT).contains(loader)) continue;
             if (!exactVersionMatch(id, mc) && !exactVersionMatch(base, mc)) continue;
+            if (requestedLoaderVersion != null && !requestedLoaderVersion.isEmpty()) {
+                String requested = requestedLoaderVersion.toLowerCase(Locale.ROOT);
+                String actual = id.toLowerCase(Locale.ROOT);
+                boolean pinnedMatch;
+                switch (loader) {
+                    case "neoforge": pinnedMatch = actual.equals("neoforge-" + requested); break;
+                    case "forge": pinnedMatch = actual.endsWith("-forge-" + requested); break;
+                    case "fabric": pinnedMatch = actual.contains("fabric-loader-" + requested + "-"); break;
+                    case "quilt": pinnedMatch = actual.contains("quilt-loader-" + requested + "-"); break;
+                    default: pinnedMatch = true;
+                }
+                if (!pinnedMatch) continue;
+            }
             if (descriptor.lastModified() > bestTime) {
                 bestTime = descriptor.lastModified();
                 best = id;
@@ -225,15 +239,11 @@ public final class SkyEngineProfileBridge {
         }
         if (best == null) throw new MissingModloaderException(mc, loader);
         if ("neoforge".equals(loader) && best.startsWith("neoforge-")) {
-            String loaderVersion = best.substring("neoforge-".length());
-            File patchedClient = new File(Tools.DIR_HOME_LIBRARY,
-                    "net/neoforged/neoforge/" + loaderVersion + "/neoforge-"
-                            + loaderVersion + "-client.jar");
-            if (!patchedClient.isFile() || patchedClient.length() < 4096) {
+            try {
+                SkyEngineClientArtifacts.requireNeoForgeClient(mc, best);
+            } catch (Exception incomplete) {
                 throw new MissingModloaderException(mc, loader,
-                        "NeoForge " + loaderVersion
-                        + " has a version descriptor, but its patched Minecraft client JAR is missing. "
-                        + "SkyLauncher must finish the NeoForge installer before Play.");
+                        "NeoForge install incomplete: " + incomplete.getMessage());
             }
         }
         return best;
