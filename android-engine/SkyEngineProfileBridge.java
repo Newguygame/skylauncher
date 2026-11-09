@@ -57,7 +57,7 @@ public final class SkyEngineProfileBridge {
         MinecraftProfile target = map.get(profile.id);
         if (target == null) {
             target = MinecraftProfile.createTemplate();
-            target.gameDir = null; // use default game root unless explicitly configured by engine
+            target.gameDir = "skylauncher-profiles/" + profile.id; // isolated mods/worlds for new SkyLauncher profiles
         }
         target.name = profile.name;
         target.lastVersionId = actualVersion;
@@ -79,6 +79,27 @@ public final class SkyEngineProfileBridge {
         LauncherPreferences.PREF_RAM_ALLOCATION = actualRam;
         LogBook.write(ctx, "Engineprofiel ingesteld: " + profile.name
                 + ", versie " + actualVersion + ", RAM " + actualRam + " MB");
+    }
+
+    /** Update native engine profile selection before browsing/installing mods.
+     *  Missing modloader builds must not prevent users from installing mods.
+     */
+    public static void prepareForModManagement(Context ctx, ProfileStore.Profile profile) throws Exception {
+        prepareEngine(ctx);
+        LauncherProfiles.load();
+        Map<String, MinecraftProfile> profiles = LauncherProfiles.mainProfileJson.profiles;
+        MinecraftProfile nativeProfile = profiles.get(profile.id);
+        if (nativeProfile == null) {
+            nativeProfile = MinecraftProfile.createTemplate();
+            nativeProfile.gameDir = "skylauncher-profiles/" + profile.id;
+            nativeProfile.lastVersionId = profile.version;
+        }
+        nativeProfile.name = profile.name;
+        profiles.put(profile.id, nativeProfile);
+        LauncherProfiles.write();
+        LauncherPreferences.DEFAULT_PREF.edit()
+                .putString(LauncherPreferences.PREF_KEY_CURRENT_PROFILE, profile.id)
+                .apply();
     }
 
     private static long getDeviceTotalRamMb(Context ctx) {
