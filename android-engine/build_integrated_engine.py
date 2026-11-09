@@ -59,26 +59,26 @@ def overlay_java(engine, sky):
             if (engine() == 1) confirmAmethystDownload();
             else openUrl(FCL_RELEASES);
         });''',
-                '''getLauncher.setOnClickListener(v -> openLauncher());''')
+                '''getLauncher.setOnClickListener(v ->
+                startActivity(new Intent(this, net.kdt.pojavlaunch.TestStorageActivity.class)));''')
             java = method(java, "private void refresh() {", '''private void refresh() {
         if (engineSpinner == null || loaderSpinner == null || versionInput == null) return;
         save();
         javaText.setText("Minecraft-game-engine en Java-beheer zijn ingebouwd; "
                 + "de engine downloadt de benodigde runtimes en gamebestanden.");
         if (getLauncher != null) {
-            getLauncher.setText("Open geïntegreerde Minecraft-engine");
+            getLauncher.setText("Engine-instellingen / modloader installeren");
             getLauncher.setEnabled(true);
         }
         if (statusText != null) {
             statusText.setText("Deze APK bevat de Minecraft-engine zelf. "
-                    + "Stel je Minecraft-account en gameversie in het enginescherm in. "
+                    + "SkyLauncher gebruikt je profielinstellingen en start Minecraft direct. "
                     + "Dit opent geen andere Android-app.");
         }
     }''')
             java = method(java, "private void openLauncher() {", '''private void openLauncher() {
         save();
-        LogBook.write(this, "SkyLauncher geïntegreerde Minecraft-engine gestart");
-        startActivity(new Intent(this, net.kdt.pojavlaunch.TestStorageActivity.class));
+        SkyEngineProfileBridge.launch(this);
     }''')
             java = java.replace(
                 "Een geïntegreerde Minecraft-engine is nog in ontwikkeling; voorlopig start de game via FCL of Amethyst.",
@@ -112,6 +112,9 @@ def overlay_java(engine, sky):
                 "        // Always-available fallback: this app owns its own profile's mods directory.",
                 block + "        // Always-available fallback: this app owns its own profile's mods directory.")
         (target_dir / (name + ".java")).write_text(java, encoding="utf-8")
+    # Native runtime bridge only compiled into combined engine APK.
+    shutil.copyfile(sky / "android-engine/SkyEngineProfileBridge.java",
+                    target_dir / "SkyEngineProfileBridge.java")
 
 
 def overlay_manifest(engine, sky):
