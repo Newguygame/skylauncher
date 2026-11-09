@@ -41,7 +41,7 @@ def patch_engine_startup(engine: Path):
             mAccountSpinner.setVisibility(android.view.View.INVISIBLE);
             android.widget.FrameLayout frame = findViewById(android.R.id.content);
             mSkyStarting = new android.widget.TextView(this);
-            mSkyStarting.setText("SkyLauncher\\nMinecraft wordt voorbereid...");
+            mSkyStarting.setText("SkyLauncher\\nPreparing Minecraft...");
             mSkyStarting.setTextColor(android.graphics.Color.WHITE);
             mSkyStarting.setGravity(android.view.Gravity.CENTER);
             mSkyStarting.setTextSize(22);
@@ -76,12 +76,12 @@ def patch_engine_startup(engine: Path):
             mSettingsButton.setVisibility(android.view.View.VISIBLE);
             mAccountSpinner.setVisibility(android.view.View.VISIBLE);
             new androidx.appcompat.app.AlertDialog.Builder(this)
-                    .setTitle("Minecraft-account toevoegen")
-                    .setMessage("Meld je eenmaal aan bij de geïntegreerde engine. "
-                            + "Daarna start Minecraft direct vanuit SkyLauncher.")
-                    .setPositiveButton("Aanmelden", (dialog, button) ->
+                    .setTitle("Add Minecraft account")
+                    .setMessage("Sign in once to the integrated game engine. "
+                            + "Afterwards, Minecraft starts directly from SkyLauncher.")
+                    .setPositiveButton("Sign in", (dialog, button) ->
                             ExtraCore.setValue(ExtraConstants.SELECT_AUTH_METHOD, true))
-                    .setNegativeButton("Terug", (dialog, button) -> finish())
+                    .setNegativeButton("Back", (dialog, button) -> finish())
                     .show();
             return;
         }
