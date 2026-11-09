@@ -20,7 +20,7 @@ final class ProfileStore {
     static final String[] ENGINES = {"Fold Craft Launcher (FCL)", "Amethyst"};
 
     static final class Profile {
-        String id, name, version, folderUri;
+        String id, name, version, folderUri, loaderVersion;
         int loader, engine, ramMb;
         Profile() {}
         JSONObject json() {
@@ -30,6 +30,7 @@ final class ProfileStore {
                 o.put("name", name);
                 o.put("version", version);
                 o.put("loader", loader);
+                o.put("loader_version", loaderVersion == null ? "" : loaderVersion);
                 o.put("engine", engine);
                 o.put("ram_mb", ramMb);
                 o.put("folder_uri", folderUri == null ? "" : folderUri);
@@ -42,6 +43,7 @@ final class ProfileStore {
             p.name = o.optString("name", "Minecraft");
             p.version = o.optString("version", "1.21.1");
             p.loader = Math.max(0, Math.min(LOADERS.length - 1, o.optInt("loader")));
+            p.loaderVersion = o.optString("loader_version", "");
             p.engine = Math.max(0, Math.min(ENGINES.length - 1, o.optInt("engine")));
             p.ramMb = Math.max(512, Math.min(32768, o.optInt("ram_mb", 4096)));
             p.folderUri = o.optString("folder_uri", "");
@@ -150,6 +152,7 @@ final class ProfileStore {
         p.engine = engine;
         p.ramMb = ramMb;
         p.folderUri = "";
+        p.loaderVersion = "";
         return p;
     }
 }
