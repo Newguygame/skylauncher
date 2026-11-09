@@ -310,8 +310,11 @@ public final class MainActivity extends Activity {
         if (engineSpinner == null || loaderSpinner == null || versionInput == null) return;
         ProfileStore.Profile profile = ProfileStore.active(this);
         profile.engine = engine();
-        profile.loader = loaderSpinner.getSelectedItemPosition();
+        int nextLoader = loaderSpinner.getSelectedItemPosition();
         String version = versionInput.getText().toString().trim();
+        if (!version.isEmpty() && (!version.equals(profile.version)
+                || nextLoader != profile.loader)) profile.loaderVersion = "";
+        profile.loader = nextLoader;
         if (!version.isEmpty()) profile.version = version;
         ProfileStore.upsert(this, profile);
         lastProfileSnapshot = profileSnapshot(profile);
