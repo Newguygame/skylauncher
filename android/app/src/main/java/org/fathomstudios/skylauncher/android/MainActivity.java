@@ -16,6 +16,8 @@ import android.view.View;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -25,7 +27,7 @@ import android.widget.Toast;
 
 public final class MainActivity extends Activity {
     private static final int BG = Color.rgb(10, 18, 31);
-    private static final int PANEL = Color.rgb(20, 33, 52);
+    private static final int PANEL = Color.argb(237, 20, 33, 52);
     private static final int WHITE = Color.rgb(238, 248, 255);
     private static final int MUTED = Color.rgb(174, 196, 213);
     private static final int ACCENT = Color.rgb(65, 218, 204);
@@ -117,19 +119,53 @@ public final class MainActivity extends Activity {
     private void render() {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
-        scroll.setBackgroundColor(BG);
+        scroll.setBackgroundColor(Color.TRANSPARENT);
+        FrameLayout frame = new FrameLayout(this);
+        frame.setBackgroundColor(BG);
+        ImageView wallpaper = new ImageView(this);
+        wallpaper.setImageResource(R.drawable.skylauncher_bg);
+        wallpaper.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        wallpaper.setAlpha(0.25f);
+        frame.addView(wallpaper, new FrameLayout.LayoutParams(-1, -1));
+        frame.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
+        frame.setOnApplyWindowInsetsListener((view, insets) -> {
+            view.setPadding(0, insets.getSystemWindowInsetTop(),
+                    0, insets.getSystemWindowInsetBottom());
+            return insets;
+        });
         LinearLayout root = new LinearLayout(this);
         root.setPadding(dp(20), dp(28), dp(20), dp(24));
         root.setOrientation(LinearLayout.VERTICAL);
         scroll.addView(root);
 
-        add(root, text("SKYLAUNCHER", 30, WHITE, true), 3);
-        add(root, text("Android · launcherkeuze (alpha)", 15, ACCENT, true), 20);
+        LinearLayout branding = new LinearLayout(this);
+        branding.setOrientation(LinearLayout.HORIZONTAL);
+        branding.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        ImageView logo = new ImageView(this);
+        logo.setImageResource(R.drawable.skylauncher_desktop);
+        logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        branding.addView(logo, new LinearLayout.LayoutParams(dp(55), dp(55)));
+        LinearLayout brandTitle = new LinearLayout(this);
+        brandTitle.setOrientation(LinearLayout.VERTICAL);
+        brandTitle.setPadding(dp(12), 0, 0, 0);
+        brandTitle.addView(text("SkyLauncher", 27, WHITE, true));
+        brandTitle.addView(text("Fathom Studios · Android", 13, ACCENT, false));
+        branding.addView(brandTitle);
+        add(root, branding, 14);
+
+        LinearLayout nav = new LinearLayout(this);
+        nav.setOrientation(LinearLayout.HORIZONTAL);
+        Button homeTab = button("Home", true);
+        Button modsTab = button("Mods", false);
+        nav.addView(homeTab, new LinearLayout.LayoutParams(0, dp(50), 1));
+        nav.addView(modsTab, new LinearLayout.LayoutParams(0, dp(50), 1));
+        modsTab.setOnClickListener(v -> openMods());
+        add(root, nav, 20);
 
         LinearLayout intro = section(root);
         add(intro, text("Minecraft Java op Android", 20, WHITE, true), 10);
         add(intro, text(
-                "Kies een externe Minecraft-launcher. Deze eerste Android-versie bewaart je voorkeuren en opent die launcher; Minecraft en Java draaien in FCL of Amethyst.",
+                "Beheer hier je Minecraft-versie, modloader en mods. Een geïntegreerde Minecraft-engine is nog in ontwikkeling; voorlopig start de game via FCL of Amethyst.",
                 14, MUTED, false), 2);
 
         LinearLayout setup = section(root);
@@ -182,7 +218,11 @@ public final class MainActivity extends Activity {
         add(javaSection, javaInfo, 1);
 
         LinearLayout mods = section(root);
-        add(mods, text("Modpacks", 17, WHITE, true), 8);
+        add(mods, text("Mods en modpacks", 17, WHITE, true), 8);
+        add(mods, text("Zoek op Modrinth, controleer Minecraft-versie en modloader en installeer de mod rechtstreeks in een zelfgekozen mods-map.", 14, MUTED, false), 10);
+        Button installMod = button("Mods zoeken en installeren", true);
+        installMod.setOnClickListener(v -> openMods());
+        add(mods, installMod, 12);
         add(mods, text("Vind een modpack en importeer het in de gekozen Minecraft-launcher. Directe SkyLauncher-modpackinstallatie volgt later.", 14, MUTED, false), 10);
         Button modrinth = button("Bekijk Modrinth-modpacks", false);
         modrinth.setOnClickListener(v -> openUrl("https://modrinth.com/modpacks"));
@@ -197,7 +237,7 @@ public final class MainActivity extends Activity {
         versionInput.setOnFocusChangeListener((v, focused) -> {
             if (!focused) refresh();
         });
-        setContentView(scroll);
+        setContentView(frame);
         refresh();
     }
 
@@ -263,6 +303,11 @@ public final class MainActivity extends Activity {
                     ? "Gebruik de knop hierboven om Amethyst automatisch te downloaden."
                     : "Download FCL via de officiële projectpagina."));
         }
+    }
+
+    private void openMods() {
+        save();
+        startActivity(new Intent(this, ModBrowserActivity.class));
     }
 
     private void openLauncher() {
