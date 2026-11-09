@@ -83,7 +83,7 @@ public final class ProfilesActivity extends Activity {
                     + " · " + p.ramMb + " MB", 13), 12);
             Button select = btn(p.id.equals(active.id) ? "Dit profiel is actief" : "Selecteren");
             select.setEnabled(!p.id.equals(active.id));
-            select.setOnClickListener(v -> { ProfileStore.setActive(this, p.id); draw(); });
+            select.setOnClickListener(v -> { ProfileStore.setActive(this, p.id); LogBook.write(this, "Profiel geselecteerd: " + p.name); draw(); });
             add(card, select, 7);
             Button edit = btn("Bewerken");
             edit.setOnClickListener(v -> edit(p));
@@ -164,6 +164,7 @@ public final class ProfilesActivity extends Activity {
                     updated.engine = engine.getSelectedItemPosition();
                     updated.ramMb = mb;
                     ProfileStore.upsert(this, updated);
+                    LogBook.write(this, "Profiel opgeslagen: " + updated.name);
                     if (profile == null) ProfileStore.setActive(this, updated.id);
                     draw();
                 })
