@@ -45,6 +45,7 @@ public final class MainActivity extends Activity {
     private Button getLauncher;
     private File pendingAmethystApk;
     private boolean downloadingAmethyst;
+    private boolean installingSkyLauncherUpdate;
     private String lastProfileId = "";
     private String lastProfileSnapshot = "";
     private String lastSettings = "";
@@ -194,8 +195,23 @@ public final class MainActivity extends Activity {
         packsTab.setOnClickListener(v -> startActivity(new Intent(this, ModpacksActivity.class)));
         settingsTab.setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)));
         logsTab.setOnClickListener(v -> startActivity(new Intent(this, ToolsActivity.class)));
-        add(root, nav2, 14);
+        add(root, nav2, 6);
 
+        LinearLayout nav3 = new LinearLayout(this);
+        nav3.setOrientation(LinearLayout.HORIZONTAL);
+        Button accountTab = button("Microsoft-account", false);
+        Button updateTab = button("SkyLauncher bijwerken", false);
+        nav3.addView(accountTab, new LinearLayout.LayoutParams(0, dp(50), 1));
+        nav3.addView(updateTab, new LinearLayout.LayoutParams(0, dp(50), 1));
+        accountTab.setOnClickListener(v -> startActivity(new Intent(this, AccountActivity.class)));
+        updateTab.setOnClickListener(v -> checkForSkyLauncherUpdates());
+        add(root, nav3, 15);
+
+        String username = MicrosoftLogin.username(this);
+        if (!username.isEmpty()) {
+            add(root, text("Microsoft / Minecraft: " + username
+                    + " (alleen SkyLauncher-account)", 13, accent(), true), 10);
+        }
         add(root, text("Actief profiel: " + profile.name + " • " + profile.ramMb + " MB voorkeur", 14, accent(), true), 14);
 
         LinearLayout intro = section(root);
@@ -392,6 +408,50 @@ public final class MainActivity extends Activity {
         }
     }
 
+
+    private void checkForSkyLauncherUpdates() {
+        if (statusText != null) statusText.setText("Officiële SkyLauncher-releases controleren...");
+        AndroidUpdater.check(this, new AndroidUpdater.Result<AndroidUpdater.Release>() {
+            @Override public void success(AndroidUpdater.Release release) {
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("SkyLauncher Android-update gevonden")
+                        .setMessage("Release " + release.tag + " bevat een Android-APK ("
+                                + Math.max(1, release.size / 1024 / 1024) + " MB). "
+                                + "SkyLauncher controleert bij het downloaden de pakketnaam, "
+                                + "de versienummering en de digitale handtekening. "
+                                + "Alleen een met dezelfde sleutel ondertekende APK kan je huidige installatie bijwerken.")
+                        .setPositiveButton("Download en controleer", (dialog, which) -> {
+                            if (statusText != null) statusText.setText("SkyLauncher-update downloaden...");
+                            AndroidUpdater.download(MainActivity.this, release,
+                                    progress -> { if (statusText != null) statusText.setText(progress); },
+                                    new AndroidUpdater.Result<File>() {
+                                        @Override public void success(File apk) {
+                                            installingSkyLauncherUpdate = true;
+                                            LogBook.write(MainActivity.this, "SkyLauncher-update gevalideerd en installatie aangevraagd");
+                                            requestAndroidInstallation(apk);
+                                        }
+                                        @Override public void failure(String error) {
+                                            if (statusText != null) statusText.setText("Update mislukt: " + error);
+                                            new AlertDialog.Builder(MainActivity.this)
+                                                    .setTitle("Update niet geïnstalleerd")
+                                                    .setMessage(error)
+                                                    .setPositiveButton("OK", null).show();
+                                        }
+                                    });
+                        })
+                        .setNegativeButton("Annuleren", null).show();
+            }
+            @Override public void failure(String error) {
+                if (statusText != null) statusText.setText(error);
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("SkyLauncher Android-updates")
+                        .setMessage(error + "\n\nOp dit moment kunnen testbuilds nog apart via GitHub Actions worden gedownload. "
+                                + "Automatische updates vereisen een officiële Android-release en één vaste privé bewaarde signing key.")
+                        .setPositiveButton("OK", null).show();
+            }
+        });
+    }
+
     private void confirmAmethystDownload() {
         if (downloadingAmethyst) return;
         new AlertDialog.Builder(this)
@@ -405,6 +465,7 @@ public final class MainActivity extends Activity {
     private void startAmethystDownload() {
         if (downloadingAmethyst) return;
         downloadingAmethyst = true;
+        installingSkyLauncherUpdate = false;
         refresh();
         statusText.setText("Officiële Amethyst-release ophalen...");
         AmethystInstaller.download(this, new AmethystInstaller.Listener() {
@@ -459,13 +520,17 @@ public final class MainActivity extends Activity {
     private void launchSystemInstaller(File apk) {
         try {
             AmethystInstaller.openInstaller(this, apk);
-            if (statusText != null) statusText.setText("Bevestig de installatie in Android. SkyLauncher installeert niets zonder toestemming.");
+            if (statusText != null) statusText.setText(installingSkyLauncherUpdate
+                    ? "Bevestig de SkyLauncher-update in Android; je profielinstellingen blijven behouden als dezelfde signing key wordt gebruikt."
+                    : "Bevestig de installatie in Android. SkyLauncher installeert niets zonder toestemming.");
         } catch (Exception e) {
             if (statusText != null) statusText.setText("Kon Android-installatie niet openen: " + e.getMessage());
             new AlertDialog.Builder(this)
                     .setTitle("Android kon de APK niet openen")
-                    .setMessage("Probeer Amethyst via de officiële GitHub-releasepagina te installeren.")
-                    .setPositiveButton("Open releases", (d, w) -> openUrl(AMETHYST_INSTALL))
+                    .setMessage("Het installatievenster kon niet worden geopend.")
+                    .setPositiveButton("Open releases", (d, w) -> openUrl(installingSkyLauncherUpdate
+                            ? "https://github.com/Newguygame/skylauncher/releases"
+                            : AMETHYST_INSTALL))
                     .setNegativeButton("Sluiten", null).show();
         }
     }
