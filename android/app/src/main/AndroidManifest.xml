@@ -10,7 +10,7 @@
     <application
         android:allowBackup="true"
         android:label="SkyLauncher Android"
-        android:icon="@drawable/skylauncher_icon"
+        android:icon="@drawable/skylauncher_desktop"
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false">
         <provider
@@ -22,6 +22,7 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"/>
         </provider>
+        <activity android:name=".ModBrowserActivity" android:exported="false"/>
         <activity android:name=".MainActivity"
             android:exported="true"
             android:screenOrientation="unspecified">
