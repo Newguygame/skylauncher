@@ -207,9 +207,12 @@ public final class SkyEngineLoaderInstaller extends Activity {
             case "Forge": {
                 List<String> all = ForgeUtils.downloadForgeVersions();
                 String prefix = mc + "-";
-                String chosen = latestVersionWithPrefix(all, prefix);
-                if (chosen == null) throw new IllegalStateException(
-                        "Forge has no published version for Minecraft " + mc + ".");
+                String chosen = profile.loaderVersion != null
+                        && !profile.loaderVersion.isEmpty()
+                        ? prefix + profile.loaderVersion : latestVersionWithPrefix(all, prefix);
+                if (chosen == null || all == null || !all.contains(chosen))
+                    throw new IllegalStateException("Required Forge version is unavailable: "
+                            + (chosen == null ? mc : chosen));
                 return new ModLoader(ModLoader.MOD_LOADER_FORGE,
                         chosen.substring(prefix.length()), mc);
             }
@@ -223,9 +226,13 @@ public final class SkyEngineLoaderInstaller extends Activity {
                 }
                 String prefix = mc.substring(2) + ".";
                 List<String> all = NeoForgeInstallFragment.downloadNeoForgeVersions();
-                String chosen = latestVersionWithPrefix(all, prefix);
-                if (chosen == null) throw new IllegalStateException(
-                        "NeoForge has no compatible release for Minecraft " + mc + ".");
+                String chosen = profile.loaderVersion != null
+                        && !profile.loaderVersion.isEmpty()
+                        ? profile.loaderVersion : latestVersionWithPrefix(all, prefix);
+                if (chosen == null || !chosen.startsWith(prefix)
+                        || all == null || !all.contains(chosen))
+                    throw new IllegalStateException("Required NeoForge version is unavailable: "
+                            + (chosen == null ? mc : chosen));
                 return new ModLoader(ModLoader.MOD_LOADER_NEOFORGE, chosen, mc);
             }
             case "Fabric":
@@ -236,7 +243,15 @@ public final class SkyEngineLoaderInstaller extends Activity {
                 FabricVersion chosen = null;
                 if (choices != null) for (FabricVersion candidate : choices) {
                     if (candidate == null || candidate.version == null
-                            || candidate.version.isEmpty() || !candidate.stable) continue;
+                            || candidate.version.isEmpty()) continue;
+                    if (profile.loaderVersion != null && !profile.loaderVersion.isEmpty()) {
+                        if (profile.loaderVersion.equals(candidate.version)) {
+                            chosen = candidate;
+                            break;
+                        }
+                        continue;
+                    }
+                    if (!candidate.stable) continue;
                     if (chosen == null || compareVersions(candidate.version, chosen.version) > 0) {
                         chosen = candidate;
                     }
