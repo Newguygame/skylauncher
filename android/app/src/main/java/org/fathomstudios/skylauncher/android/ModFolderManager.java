@@ -44,15 +44,25 @@ final class ModFolderManager {
             if (saved != null) return saved;
         }
         // Auto-detect only inside trees the user previously authorized.
+        // Ambiguous grants must never silently install mods into the wrong profile.
+        Folder one = null;
+        Uri oneUri = null;
+        boolean multiple = false;
         for (UriPermission permission : context.getContentResolver().getPersistedUriPermissions()) {
             if (!permission.isWritePermission()) continue;
             Folder found = locateGranted(context, permission.getUri());
             if (found == null) continue;
-            if (profile.folderUri == null || profile.folderUri.isEmpty()) {
-                profile.folderUri = permission.getUri().toString();
-                ProfileStore.upsert(context, profile);
+            if (one != null) {
+                multiple = true;
+                break;
             }
-            return found;
+            one = found;
+            oneUri = permission.getUri();
+        }
+        if (one != null && !multiple) {
+            profile.folderUri = oneUri.toString();
+            ProfileStore.upsert(context, profile);
+            return one;
         }
         // Always-available fallback: this app owns its own profile's mods directory.
         File root = context.getExternalFilesDir(null);
@@ -62,7 +72,8 @@ final class ModFolderManager {
             return new Folder(null, null, "Appopslag niet beschikbaar", false);
         }
         return new Folder(null, mods,
-                "SkyLauncher/" + profile.name + "/mods (eigen appmap; externe launcher ziet deze niet automatisch)",
+                "SkyLauncher/" + profile.name + "/mods (eigen appmap; externe launcher ziet deze niet automatisch)"
+                + (multiple ? " — meerdere toegestane mods-mappen: kies er één handmatig" : ""),
                 false);
     }
 
