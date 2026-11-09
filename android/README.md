@@ -1,73 +1,86 @@
-# SkyLauncher Android 0.3.0-alpha
+# SkyLauncher Android 0.4.0-alpha — onafhankelijke launcherfuncties
 
-Dit is de Android-port van SkyLauncher. **De Minecraft Java-game-engine is nog niet
-in deze APK geïntegreerd.** Je start Minecraft op dit moment nog via de externe
-Android-launcher FCL of Amethyst. Android kan geen willekeurige Windows/Linux Java
-Swing JAR rechtstreeks als native APK uitvoeren.
+Deze Android-port beheert eigen SkyLauncher-profielen, mods, modpacks zoeken,
+achtergronden en instellingen. **Minecraft zelf draait nog via Amethyst of FCL.**
+De app gebruikt geen privé Amethyst-bestanden, kopieert geen tokens en kan
+Amethyst of een andere Minecraft Java-launcher niet onzichtbaar aansturen zonder
+een ondersteunde publieke integratie/interface.
 
-## Desktopfuncties die nu in Android aanwezig zijn
+## Nieuwe functies in alpha 0.4.0
 
-- Origineel SkyLauncher-icoon en vier achtergrondafbeeldingen.
-- Homepagina met secties voor profielen, mods, modpacks, instellingen en logs.
-- Meerdere profielen aanmaken, selecteren, aanpassen, verwijderen.
-- Minecraft-versie, modloader (Vanilla, Fabric, Quilt, Forge, NeoForge)
-  en het externe launcherprogramma per profiel bewaren.
-- RAM-voorkeur per profiel. **Deze instelling wordt nog niet doorgegeven aan de
-  externe Minecraft-engine.**
-- Kleurenpresets, aangepaste HEX-accentkleur en wallpaperkeuze.
-- Modrinth-mods zoeken per Minecraft-versie en modloader.
-- SHA-512-gecontroleerde mods rechtstreeks downloaden en installeren in
-  de voor het actieve profiel geselecteerde, beschrijfbare mods-map.
-- Reeds geïnstalleerde .jar-bestanden tonen, uitschakelen/inschakelen en verwijderen.
-- Modrinth-modpacks zoeken en via officiële website openen (geen import).
-- Lokale SkyLauncher-logboeken bekijken en delen.
-- Amethyst van officiële GitHub releases downloaden, met expliciete
-  Android-bevestiging laten installeren; FCL/Amethyst als externe apps openen.
+- **Eigen Microsoft-aanmelding** in SkyLauncher, via Microsoft Device Code en
+  uitsluitend via officiële Microsoft/Xbox/Minecraft-domeinen.
+- Na Microsoft OAuth worden Xbox Live / XSTS en de Minecraft Java-profiel-API
+  aangeroepen om te controleren of het account een echt Java-profiel heeft.
+- Vernieuwingsgegevens worden versleuteld in Android Keystore (AES-GCM)
+  opgeslagen; Microsoft-wachtwoorden worden nooit door SkyLauncher ontvangen
+  of opgeslagen. De huidige alpha gebruikt het vernieuwingsgegeven nog niet
+  voor automatisch verlengen of spelstart.
+- Inloggen in SkyLauncher **meldt je niet automatisch aan in Amethyst**.
+  Er is geen gedeelde publieke account-API of Android-opslagtoegang voor die
+  koppeling. Minecraft-accountoverdracht/SSO wordt daarom niet geclaimd.
+- **Controleer SkyLauncher-updates**: zoekt officiële `android-v*` releases
+  in GitHub, downloadt de APK over HTTPS, verifieert pakket-ID,
+  hoger Android versionCode, SHA-256 wanneer gepubliceerd en **dezelfde
+  APK-ondertekeningscertificaten** als de geïnstalleerde app.
+  De Android package installer vraagt altijd gebruikersbevestiging.
+- In de GitHub Actions-workflow is nu **stabiele ondertekening** mogelijk via
+  aparte repository secrets. De sleutel zelf staat niet in GitHub-code.
 
-## Automatische mods-mapdetectie
+## Waarom bestaande test-APK's niet konden updaten
 
-Bij de eerste start maakt SkyLauncher een **eigen mods-map per profiel** aan.
-Via het Storage Access Framework (SAF) kan de gebruiker met de knop
-**Minecraft-map toegang geven** een mods-map of bovenliggende map kiezen.
-Die toestemming wordt bewaard. SkyLauncher zoekt dan maximaal enkele niveaus
-naar een map genaamd `mods`.
+GitHub Actions maakte debug-APK's met een tijdelijke signing key. Android
+vereist bij updates hetzelfde handtekeningscertificaat. Een build met een
+ander certificaat wordt geweigerd. Dit is een beveiligingscontrole van Android,
+geen modloaderprobleem.
 
-Ook eerder verleende maptoegang kan automatisch worden herkend. Als meer dan
-één toegestane mods-map wordt gevonden, wordt voor de veiligheid niets naar
-een willekeurige andere launcher geschreven: kies zelf de juiste map.
-De eigen SkyLauncher-map is **niet automatisch dezelfde** als de mods-map van FCL
-of Amethyst. Android 11+ blokkeert directe toegang tot veel mappen onder
-`Android/data`; dit wordt **niet** omzeild, ook niet op Android 16/17.
+Om dit te herstellen is een vaste, privé ondertekeningssleutel nodig.
+De volgende secrets moeten op GitHub worden gezet onder
+`Settings > Secrets and variables > Actions`:
 
-## Nog niet beschikbaar
+- `SKYLAUNCHER_ANDROID_KEYSTORE_BASE64`: Base64-inhoud van de privé keystore.
+- `SKYLAUNCHER_ANDROID_STORE_PASSWORD`: keystore-wachtwoord.
+- `SKYLAUNCHER_ANDROID_KEY_ALIAS`: sleutel-alias.
+- `SKYLAUNCHER_ANDROID_KEY_PASSWORD`: sleutel-wachtwoord.
 
-- Minecraft Java rechtstreeks **in** SkyLauncher starten zonder zichtbare
-  Amethyst/FCL-app: vergt integratie van Android JRE/JNI/renderer/authentication.
-- Eigen Java-download/installatie, Microsoft-login of Minecraft-installatie.
-- Automatische overdracht van SkyLauncher-profielen en RAM naar andere launchers.
-- CurseForge-mod downloads, Fathom pack/GitHub pack integratie,
-  complete Modrinth/CurseForge modpack-installatie en automatische updates.
-- Automatisch oplossen/installeren van vereiste modafhankelijkheden.
-- Automatische synchronisatie van spelbestanden met een afgesloten
-  externe appmap. Bestanden in app-eigen map moeten nog worden geïmporteerd
-  in de externe Minecraft-launcher als die deze opslag niet gebruikt.
-- Het delen van dezelfde release-ondertekening als vorige test APK's
-  vereist een vaste, veilig opgeslagen signing key; CI gebruikt een tijdelijke
-  debugkeystore. Bij installeren over een oudere alpha kan een handmatige
-  verwijdering nodig zijn (waardoor lokale instellingen verloren gaan).
+**Plaats nooit een private keystore of wachtwoord als repositorybestand.**
+Met deze vier secrets bouwt de workflow naast de test-APK ook een
+`SkyLauncher-Android-Signed-APK` artifact. Een Git-tag met prefix
+`android-v` kan de ondertekende APK publiceren als GitHub Release.
+Alleen dan kan de in-app-updatefunctie de APK vinden.
+
+Bestaande v0.3.0-debuginstallaties zullen nog **éénmalig moeten worden
+verwijderd** om naar de vaste signeersleutel te wisselen; back-up je
+profielen/instellingen voordat je een oude APK verwijdert.
+Vanaf de eerste installatie met de vaste sleutel zijn normale upgrades
+mogelijk zolang die sleutel niet wordt vervangen.
+
+## Status van overige desktopfuncties
+
+- Profielen: eigen Minecraft-versie, modloader, voorkeurs-RAM en launcherkeuze.
+- Mods: Modrinth zoeken, checksumcontrole, eigen/SAF-gedeelde mods-map,
+  automatische mapdetectie binnen toegestane opslag, in/uitschakelen, verwijderen.
+- Modpacks: zoeken en details openen (geen volledige import of modpack-updates).
+- UI: originele desktop-appicon en 4 wallpapers, 5 kleurpresets, eigen kleur.
+- Tools & Logs: lokale activiteiten, geen externe gamelogboeken.
+- Amethyst-installatie: officiële APK downloaden en Android installeren laten bevestigen.
+- Java-runtime en Minecraft spelen: blijven vooralsnog bij FCL of Amethyst.
+- Geen Microsoft-tokenoverdracht naar een andere app.
+- Geen authentieke desktop-lanceerconsole of geïntegreerde LWJGL/JRE-renderer.
 
 ## Build
 
-Android SDK 36, Gradle 8.13, JDK 17:
+Android SDK 36, JDK 17, Gradle 8.13.
 
-```sh
+```bash
 gradle -p android assembleDebug
 ```
 
-Bij CI wordt `icons/SkyLauncher.png` plus `assets/background-1.jpg` t/m
-`background-4.jpg` als Android-resource meegenomen. Build-output staat
-in GitHub Actions-artifact **SkyLauncher-Android-Prototype-APK**.
+Zonder repository secrets is uitsluitend een debug-APK beschikbaar,
+waarbij de handtekening per CI-omgeving kan verschillen. Een debug-APK
+is **geen** langdurig upgradebare distributieversie. Native Android
+Minecraft-start vereist nog een afzonderlijke engine-port.
 
-Desktop SkyLauncher **3.1.7** is niet gewijzigd.
+Desktop SkyLauncher **3.1.7** is ongewijzigd.
 
-Meer informatie: https://github.com/Newguygame/skylauncher/pull/1
+Broncode: https://github.com/Newguygame/skylauncher/pull/1
