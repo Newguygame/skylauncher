@@ -129,6 +129,8 @@ def overlay_java(engine, sky):
                     target_dir / "SkyEngineLoaderInstaller.java")
     shutil.copyfile(sky / "android-engine/SkyPackInstaller.java",
                     target_dir / "SkyPackInstaller.java")
+    shutil.copyfile(sky / "android-engine/SkyPackUpdateStore.java",
+                     target_dir / "SkyPackUpdateStore.java")
     raw_dir = engine / "app_pojavlauncher/src/main/res/raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(sky / "android-engine/bridge-cert.pem",
