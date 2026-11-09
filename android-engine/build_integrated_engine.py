@@ -127,6 +127,8 @@ def overlay_java(engine, sky):
                     target_dir / "SkyEngineProfileBridge.java")
     shutil.copyfile(sky / "android-engine/SkyEngineLoaderInstaller.java",
                     target_dir / "SkyEngineLoaderInstaller.java")
+    shutil.copyfile(sky / "android-engine/SkyEngineClientArtifacts.java",
+                    target_dir / "SkyEngineClientArtifacts.java")
     shutil.copyfile(sky / "android-engine/SkyPackInstaller.java",
                     target_dir / "SkyPackInstaller.java")
     shutil.copyfile(sky / "android-engine/SkyPackUpdateStore.java",
