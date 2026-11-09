@@ -224,6 +224,18 @@ public final class SkyEngineProfileBridge {
             }
         }
         if (best == null) throw new MissingModloaderException(mc, loader);
+        if ("neoforge".equals(loader) && best.startsWith("neoforge-")) {
+            String loaderVersion = best.substring("neoforge-".length());
+            File patchedClient = new File(Tools.DIR_HOME_LIBRARY,
+                    "net/neoforged/neoforge/" + loaderVersion + "/neoforge-"
+                            + loaderVersion + "-client.jar");
+            if (!patchedClient.isFile() || patchedClient.length() < 4096) {
+                throw new MissingModloaderException(mc, loader,
+                        "NeoForge " + loaderVersion
+                        + " has a version descriptor, but its patched Minecraft client JAR is missing. "
+                        + "SkyLauncher must finish the NeoForge installer before Play.");
+            }
+        }
         return best;
     }
 
@@ -267,7 +279,10 @@ public final class SkyEngineProfileBridge {
 
     private static final class MissingModloaderException extends Exception {
         MissingModloaderException(String mc, String loader) {
-            super("Geen geïnstalleerde " + loader + "-versie gevonden voor Minecraft " + mc);
+            super("No installed " + loader + " version found for Minecraft " + mc);
+        }
+        MissingModloaderException(String mc, String loader, String reason) {
+            super(reason);
         }
     }
 }
