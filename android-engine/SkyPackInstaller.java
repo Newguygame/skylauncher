@@ -78,8 +78,11 @@ final class SkyPackInstaller {
     private SkyPackInstaller() { }
 
     static String relay(Context context) {
-        return context.getSharedPreferences("skylauncher_android", Context.MODE_PRIVATE)
+        String saved = context.getSharedPreferences("skylauncher_android", Context.MODE_PRIVATE)
                 .getString(RELAY_SETTING, DESKTOP_VPS).trim();
+        // Android 0.8 saved an empty relay value on some devices.
+        // Continue using the actual desktop VPS after an in-place update.
+        return saved.isEmpty() ? DESKTOP_VPS : saved;
     }
 
     static void saveRelay(Context context, String raw) {
