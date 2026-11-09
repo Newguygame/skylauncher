@@ -1,34 +1,43 @@
-# SkyLauncher Android 0.1.1-alpha — testbuild
+# SkyLauncher Android 0.2.0-alpha — companion / mod manager
 
-Deze Android-app is nog een **companion voor Minecraft Java-launchers**, geen volledige Minecraft-client.
+**Dit is nog GEEN zelfstandig geïntegreerde Minecraft Java Edition game-engine.**
+Om Minecraft zonder Amethyst-app te starten, moet de Amethyst-launcher/game-runtime
+binnen SkyLauncher worden geport (JNI, renderer, LWJGL, native libs, Microsoft-login
+en JRE). Deze integratie is niet aanwezig in de huidige APK; wees hier duidelijk over.
 
-## Wat werkt
-- FCL of Amethyst kiezen.
-- Minecraft-versie, modloader en engine onthouden.
-- Java-versie adviseren.
-- De **officiële Amethyst.apk** van de nieuwste stabiele GitHub Releases van [AngelAuraMC](https://github.com/AngelAuraMC/Amethyst-Android/releases) automatisch downloaden.
-- De gedownloade APK controleren (Android-pakket-ID `org.angelauramc.amethyst`) en het normale Android-installatievenster openen.
-- Amethyst starten als de app geïnstalleerd is. FCL wordt geopend wanneer geïnstalleerd.
-- Modrinth/CurseForge-pagina's openen.
+## Nieuw
+- Android API 36 doel, draait op nieuwere Android-versies (Android 17 is nog niet op toestel getest).
+- De originele desktop-SkyLauncher-appicon en een van de desktop-achtergronden worden
+  bij elke APK-build verpakt; donker startscherm met SkyLauncher-branding.
+- Eigen **Modrinth modbrowser in SkyLauncher**: zoeken, filter op Minecraft-versie
+  en NeoForge/Fabric/Forge/Quilt, bijpassend .jar downloaden, SHA-512-bestandscontrole.
+- Bewaart toegang tot de via Android geselecteerde mods-map, installeert .jar via
+  Storage Access Framework. Selecteer de echte mods-map van het gewenste profiel.
+- Op moderne Android-versies is toegang tot **Android/data** beperkt. Als de
+  geselecteerde launcher alleen daar bestanden bewaart, kan SkyLauncher er niet bij;
+  kies dan een ondersteunde gedeelde map of importeer mods handmatig.
+- Automatische Amethyst APK-download en normale, door Android bevestigde installatie
+  blijft mogelijk. Externe Minecraft-launcher kan als tijdelijke fallback worden geopend.
 
-**Beveiliging:** downloaden gebeurt uitsluitend via HTTPS naar GitHub/GitHub-hosted assets. Android controleert of je de app uit deze bron mag installeren en vraagt bevestiging; SkyLauncher kan en mag niet zonder toestemming stil installeren.
-
-## Nog niet ondersteund
-- Java wordt NIET door SkyLauncher geïnstalleerd. Gebruik de JRE-manager in Amethyst/FCL.
-- SkyLauncher kan Minecraft nog niet zelfstandig starten; de gekozen launcher doet dit.
-- Instellingen voor Minecraft-versies of modloaders worden nog niet automatisch doorgegeven aan de gekozen launcher.
-- Geen automatische modpack-installatie of Microsoft-aanmelding vanuit SkyLauncher.
-- APK is CI-gebouwd, maar nog niet getest op een fysieke Android-telefoon.
+## Grenzen
+- Alleen **mods** (losse .jar-bestanden), geen complete .mrpack-modpacks.
+- Vereiste dependencies van mods worden **nog niet automatisch** geïnstalleerd.
+- SkyLauncher geeft geen bestaande FCL/Amethyst-profielen of opslaglocaties automatisch
+  door, en is nog niet geïntegreerd met hun interne launch-API's.
+- Geen Minecraft-direct-launch vanuit het SkyLauncher-proces; hiervoor is een echte
+  zelfstandige engine-integratie vereist.
+- Minecraft-gebruik vereist eigen geldige licentie en officiële authenticatie.
+- De Android-APK is CI-gebouwd, maar nog niet op fysiek toestel getest.
 
 ## Build
-Benodigd: JDK 17, Gradle 8.10.2, Android SDK 35.
-
+JDK 17, Gradle 8.13, Android SDK 36.
 ```bash
 gradle -p android assembleDebug
 ```
+GitHub Actions maakt de originele icon/wallpaper vooraf beschikbaar vanuit de
+eigen `icons/` en `assets/` van SkyLauncher.
+De desktop-versie 3.1.7 is niet gewijzigd.
 
-APK: `android/app/build/outputs/apk/debug/app-debug.apk`.
-
-Alternatief: download het `SkyLauncher-Android-Prototype-APK` artifact uit de [GitHub Actions Android-build](https://github.com/Newguygame/skylauncher/actions/workflows/android-apk.yml).
-
-Desktop-SkyLauncher 3.1.7 is niet aangepast of verhoogd.
+## Bronnen
+- Modrinth API: https://docs.modrinth.com/api/
+- Amethyst broncode LGPLv3: https://github.com/AngelAuraMC/Amethyst-Android
