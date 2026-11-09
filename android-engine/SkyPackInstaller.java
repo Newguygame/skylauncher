@@ -239,7 +239,8 @@ final class SkyPackInstaller {
             JSONObject item = files.optJSONObject(i);
             if (item == null || !item.optBoolean("downloadable", true)) continue;
             String name = item.optString("name").toLowerCase(Locale.ROOT);
-            if (name.endsWith(".zip")) { chosen = item; break; }
+            if (name.endsWith(".zip") && (chosen == null
+                    || item.optLong("id") > chosen.optLong("id"))) chosen = item;
         }
         if (chosen == null) throw new IOException(
                 "The author has not made a CurseForge modpack ZIP downloadable.");
@@ -251,7 +252,8 @@ final class SkyPackInstaller {
             progress.update("Downloading CurseForge pack through the same VPS as desktop...");
             download(ctx, url, zip, 512L * 1024L * 1024L, progress, false);
             verifySha1(chosen.optString("sha1"), zip);
-            installCurseForgeZip(ctx, zip, progress, expectedProfileId);
+            installCurseForgeZip(ctx, zip, progress, expectedProfileId,
+                    "curseforge:" + projectId, String.valueOf(fileId));
         } finally {
             zip.delete();
         }
@@ -264,14 +266,16 @@ final class SkyPackInstaller {
         try (InputStream in = ctx.getContentResolver().openInputStream(selected)) {
             if (in == null) throw new IOException("Cannot open the selected modpack ZIP.");
             copyToFile(in, zip, MAX_ZIP_BYTES, progress);
-            installCurseForgeZip(ctx, zip, progress, expectedProfileId);
+            installCurseForgeZip(ctx, zip, progress, expectedProfileId,
+                    "curseforge-import", fileHash(zip, "SHA-256"));
         } finally {
             zip.delete();
         }
     }
 
     private static void installCurseForgeZip(Activity ctx, File archive, Progress progress,
-                                            String expectedProfileId)
+                                            String expectedProfileId,
+                                            String packSource, String packVersion)
             throws Exception {
         File stage = new File(ctx.getCacheDir(), "sky-pack-stage");
         deleteTree(stage);
@@ -339,7 +343,8 @@ final class SkyPackInstaller {
                 progress.update("Applying pack profile: Minecraft " + gameVersion
                         + " / " + loader + "...");
             }
-            commitStage(ctx, stage, progress, expectedProfileId);
+            SkyPackUpdateStore.apply(ctx, stage, progress, expectedProfileId,
+                    packSource, packVersion, manifest.optString("name", "CurseForge pack"));
             if (!selected.id.equals(expectedProfileId))
                 throw new IOException("The selected profile changed before metadata update.");
             selected.version = gameVersion;
@@ -371,7 +376,8 @@ final class SkyPackInstaller {
                 throw new IOException("The GitHub pack archive contains no client mod JARs.");
             progress.update("Installing " + jars.length
                     + " client mods and configuration files to your Minecraft profile...");
-            commitStage(ctx, stage, progress, expectedProfileId);
+            SkyPackUpdateStore.apply(ctx, stage, progress, expectedProfileId,
+                    "fathom", latestFathomCommit(ctx), "Fathom Studios MC Pack");
             ProfileStore.Profile selected = ProfileStore.active(ctx);
             if (!selected.id.equals(expectedProfileId))
                 throw new IOException("The selected profile changed before metadata update.");
@@ -385,6 +391,248 @@ final class SkyPackInstaller {
             archive.delete();
             deleteTree(stage);
         }
+    }
+
+    /** Repository head SHA changes whenever Fathom publishes a new pack revision. */
+    private static String latestFathomCommit(Context ctx) throws Exception {
+        JSONObject result = new JSONObject(new String(readApi(ctx,
+                "https://api.github.com/repos/" + FATHOM_REPOSITORY + "/commits/main"),
+                "UTF-8"));
+        String sha = result.optString("sha");
+        if (!sha.matches("[0-9a-fA-F]{40}"))
+            throw new IOException("Could not verify Fathom pack revision.");
+        return sha;
+    }
+
+    private static String fileHash(File file, String algorithm) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance(algorithm);
+        try (InputStream in = new BufferedInputStream(new FileInputStream(file))) {
+            byte[] buf = new byte[65536];
+            int count;
+            while ((count = in.read(buf)) != -1) digest.update(buf, 0, count);
+        }
+        StringBuilder hex = new StringBuilder();
+        for (byte b : digest.digest()) hex.append(String.format(Locale.ROOT, "%02x", b & 255));
+        return hex.toString();
+    }
+
+    private static JSONObject latestModrinthVersion(Context ctx, String projectId)
+            throws Exception {
+        if (!projectId.matches("[A-Za-z0-9_-]{1,64}"))
+            throw new IOException("Invalid Modrinth project ID.");
+        JSONArray versions = new JSONArray(new String(readApi(ctx,
+                "https://api.modrinth.com/v2/project/" + projectId
+                        + "/version?include_changelog=false"), "UTF-8"));
+        for (int i = 0; i < versions.length(); i++) {
+            JSONObject v = versions.getJSONObject(i);
+            JSONArray files = v.optJSONArray("files");
+            if (files == null) continue;
+            for (int j = 0; j < files.length(); j++) {
+                String filename = files.getJSONObject(j).optString("filename");
+                if (filename.endsWith(".mrpack")) return v;
+            }
+        }
+        throw new IOException("No downloadable Modrinth .mrpack release exists.");
+    }
+
+    static String remotePackVersion(Context ctx, String source) throws Exception {
+        if ("fathom".equals(source)) return latestFathomCommit(ctx);
+        if (source.startsWith("modrinth:")) {
+            return latestModrinthVersion(ctx, source.substring(9)).getString("id");
+        }
+        if (source.startsWith("curseforge:")) {
+            long projectId = Long.parseLong(source.substring(11));
+            JSONObject response = jsonApi(ctx, "/v1/packs/" + projectId + "/files");
+            JSONArray files = response.optJSONArray("data");
+            long best = 0;
+            if (files != null) for (int i = 0; i < files.length(); i++) {
+                JSONObject file = files.optJSONObject(i);
+                if (file != null && file.optString("name").toLowerCase(Locale.ROOT)
+                        .endsWith(".zip")) best = Math.max(best, file.optLong("id"));
+            }
+            if (best <= 0) throw new IOException("No downloadable CurseForge pack update.");
+            return String.valueOf(best);
+        }
+        throw new IOException("This imported pack has no trackable online source.");
+    }
+
+    static void updatePack(Activity ctx, String source, Progress progress) throws Exception {
+        if ("fathom".equals(source)) installFathom(ctx, progress);
+        else if (source.startsWith("modrinth:"))
+            installModrinthProject(ctx, source.substring(9), progress);
+        else if (source.startsWith("curseforge:"))
+            installCurseProject(ctx, Long.parseLong(source.substring(11)), progress);
+        else throw new IOException("Imported packs have no automatic source updates.");
+    }
+
+    private static boolean allowedModrinthDownload(String raw) {
+        try {
+            URL url = new URL(raw);
+            if (!"https".equalsIgnoreCase(url.getProtocol())
+                    || url.getUserInfo() != null || url.getRef() != null) return false;
+            String host = url.getHost().toLowerCase(Locale.ROOT);
+            return host.equals("cdn.modrinth.com")
+                    || host.equals("github.com")
+                    || host.equals("raw.githubusercontent.com")
+                    || host.equals("objects.githubusercontent.com");
+        } catch (Exception invalid) {
+            return false;
+        }
+    }
+
+    private static void downloadModrinthFile(Context ctx, String url, File target,
+                                             Progress progress) throws Exception {
+        if (!allowedModrinthDownload(url))
+            throw new IOException("Unsupported modpack file host: " + url);
+        // Do not allow a trusted URL to redirect to an arbitrary host.
+        URL current = new URL(url);
+        for (int redirects = 0; redirects < 7; redirects++) {
+            if (!allowedModrinthDownload(current.toExternalForm()))
+                throw new IOException("Untrusted modpack download redirect.");
+            HttpURLConnection c = (HttpURLConnection) current.openConnection();
+            c.setInstanceFollowRedirects(false);
+            c.setConnectTimeout(25000);
+            c.setReadTimeout(45000);
+            c.setRequestProperty("User-Agent", USER_AGENT);
+            try {
+                int code = c.getResponseCode();
+                if (code == 301 || code == 302 || code == 303
+                        || code == 307 || code == 308) {
+                    String location = c.getHeaderField("Location");
+                    if (location == null) throw new IOException("Missing download redirect.");
+                    current = new URL(current, location);
+                    continue;
+                }
+                if (code != 200) throw new IOException("Mod download returned HTTP " + code);
+                try (InputStream in = new BufferedInputStream(c.getInputStream())) {
+                    copyToFile(in, target, MAX_SINGLE_FILE, progress);
+                }
+                return;
+            } finally {
+                c.disconnect();
+            }
+        }
+        throw new IOException("Too many mod download redirects.");
+    }
+
+    static void installModrinthProject(Activity ctx, String projectId, Progress progress)
+            throws Exception {
+        String expectedProfileId = ProfileStore.active(ctx).id;
+        progress.update("Checking Modrinth for the newest pack...");
+        JSONObject release = latestModrinthVersion(ctx, projectId);
+        JSONArray releaseFiles = release.getJSONArray("files");
+        JSONObject archive = null;
+        for (int i = 0; i < releaseFiles.length(); i++) {
+            JSONObject item = releaseFiles.getJSONObject(i);
+            if (!item.optString("filename").endsWith(".mrpack")) continue;
+            if (archive == null || item.optBoolean("primary")) archive = item;
+        }
+        if (archive == null) throw new IOException("Modrinth release has no .mrpack file.");
+        String versionId = release.getString("id");
+        File pack = new File(ctx.getCacheDir(), "sky-modrinth-pack.mrpack");
+        File stage = new File(ctx.getCacheDir(), "sky-pack-stage");
+        deleteTree(stage);
+        if (!stage.mkdirs()) throw new IOException("Cannot create pack staging directory.");
+        try {
+            String archiveUrl = archive.getString("url");
+            progress.update("Downloading verified Modrinth .mrpack...");
+            downloadModrinthFile(ctx, archiveUrl, pack, progress);
+            JSONObject archiveHashes = archive.optJSONObject("hashes");
+            if (archiveHashes != null) verifyExpectedHash(
+                    pack, archiveHashes.optString("sha512"),
+                    archiveHashes.optString("sha1"));
+            try (ZipFile zip = new ZipFile(pack)) {
+                ZipEntry indexEntry = zip.getEntry("modrinth.index.json");
+                if (indexEntry == null || indexEntry.getSize() > 3_000_000L)
+                    throw new IOException("Modrinth pack index is missing or too large.");
+                JSONObject index = new JSONObject(new String(
+                        readLimited(zip.getInputStream(indexEntry), 3_000_000), "UTF-8"));
+                if (index.optInt("formatVersion") != 1 || !"minecraft".equals(
+                        index.optString("game"))) throw new IOException("Unsupported .mrpack format.");
+                JSONObject dependencies = index.getJSONObject("dependencies");
+                String minecraft = dependencies.getString("minecraft");
+                if (!minecraft.matches("[A-Za-z0-9_.-]{1,64}"))
+                    throw new IOException("Invalid Minecraft version in pack.");
+                String loader = "Vanilla";
+                int foundLoaders = 0;
+                for (String id : new String[]{"neoforge", "forge", "fabric-loader", "quilt-loader"}) {
+                    if (dependencies.has(id)) {
+                        foundLoaders++;
+                        loader = id.equals("neoforge") ? "NeoForge" : id.equals("forge")
+                                ? "Forge" : id.equals("fabric-loader") ? "Fabric" : "Quilt";
+                    }
+                }
+                if (foundLoaders > 1)
+                    throw new IOException("Modrinth pack specifies multiple primary loaders.");
+                JSONArray files = index.getJSONArray("files");
+                if (files.length() > MAX_ENTRIES)
+                    throw new IOException("Modrinth pack contains too many files.");
+                long downloaded = 0;
+                for (int i = 0; i < files.length(); i++) {
+                    if (progress.cancelled()) throw new IOException("Pack installation cancelled.");
+                    JSONObject file = files.getJSONObject(i);
+                    JSONObject env = file.optJSONObject("env");
+                    if (env != null && "unsupported".equals(env.optString("client"))) continue;
+                    String path = file.getString("path");
+                    if (!allowedFile(path))
+                        throw new IOException("Unsupported modpack path: " + path);
+                    JSONArray urls = file.getJSONArray("downloads");
+                    File target = safeFile(stage, path);
+                    if (target.exists()) throw new IOException("Duplicate modpack file: " + path);
+                    Exception last = null;
+                    for (int u = 0; u < urls.length(); u++) {
+                        String link = urls.getString(u);
+                        if (!allowedModrinthDownload(link)) continue;
+                        try {
+                            progress.update("Installing Modrinth file " + (i + 1)
+                                    + "/" + files.length());
+                            downloadModrinthFile(ctx, link, target, progress);
+                            JSONObject hashes = file.getJSONObject("hashes");
+                            verifyExpectedHash(target, hashes.optString("sha512"),
+                                    hashes.optString("sha1"));
+                            last = null;
+                            break;
+                        } catch (Exception failure) {
+                            last = failure;
+                            target.delete();
+                        }
+                    }
+                    if (!target.isFile())
+                        throw new IOException("Unable to download verified pack file: " + path
+                                + (last == null ? "" : " (" + last.getMessage() + ")"));
+                    downloaded += target.length();
+                    if (downloaded > MAX_TOTAL_FILES)
+                        throw new IOException("Modrinth pack exceeds the storage limit.");
+                }
+                extractAllowed(zip, stage, "overrides/", true, progress);
+                extractAllowed(zip, stage, "client-overrides/", true, progress);
+                SkyPackUpdateStore.apply(ctx, stage, progress, expectedProfileId,
+                        "modrinth:" + projectId, versionId, index.optString("name", "Modrinth pack"));
+                ProfileStore.Profile selected = ProfileStore.active(ctx);
+                if (!expectedProfileId.equals(selected.id))
+                    throw new IOException("Active profile changed.");
+                selected.version = minecraft;
+                selected.loader = loaderIndex(loader);
+                ProfileStore.upsert(ctx, selected);
+                progress.completed("Modrinth pack installed: " + files.length()
+                        + " entries. Minecraft " + minecraft + " / " + loader
+                        + " is selected. Press Play to install the loader if needed.");
+            }
+        } finally {
+            pack.delete();
+            deleteTree(stage);
+        }
+    }
+
+    private static void verifyExpectedHash(File file, String sha512, String sha1)
+            throws Exception {
+        if (sha512 != null && sha512.matches("[0-9a-fA-F]{128}")) {
+            if (!sha512.equalsIgnoreCase(fileHash(file, "SHA-512")))
+                throw new IOException("Modrinth SHA-512 check failed: " + file.getName());
+        } else if (sha1 != null && sha1.matches("[0-9a-fA-F]{40}")) {
+            if (!sha1.equalsIgnoreCase(fileHash(file, "SHA-1")))
+                throw new IOException("Modrinth SHA-1 check failed: " + file.getName());
+        } else throw new IOException("Modrinth file has no valid security checksum.");
     }
 
     private static int loaderIndex(String name) throws IOException {
@@ -483,7 +731,7 @@ final class SkyPackInstaller {
         }
     }
 
-    private static boolean allowedFile(String relative) {
+    static boolean allowedFile(String relative) {
         String p = relative.replace('\\', '/');
         if (p.isEmpty() || p.startsWith("/") || p.startsWith(".")
                 || p.contains("..") || p.contains("//") || p.contains(":")) return false;
