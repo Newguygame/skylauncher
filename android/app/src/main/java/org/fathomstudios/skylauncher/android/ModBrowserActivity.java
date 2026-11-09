@@ -127,6 +127,11 @@ public final class ModBrowserActivity extends Activity {
                 + "Aanvullende vereiste mods (dependencies) worden nog niet automatisch geïnstalleerd. "
                 + "Mods in een verkeerde of niet-toegankelijke map zijn niet zichtbaar in Minecraft.",
                 12, muted, false), 1);
+        scroll.setOnApplyWindowInsetsListener((view, insets) -> {
+            view.setPadding(0, insets.getSystemWindowInsetTop(),
+                    0, insets.getSystemWindowInsetBottom());
+            return insets;
+        });
         setContentView(scroll);
         refreshFolder();
     }
