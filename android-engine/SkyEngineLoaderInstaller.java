@@ -154,6 +154,8 @@ public final class SkyEngineLoaderInstaller extends Activity {
                                 }
                                 report("Installing " + loaderName() + " in the built-in Java engine...");
                                 intent.putExtra("skylauncher_auto_finish", true);
+                                intent.putExtra("skylauncher_java_requirement",
+                                        minimumJavaVersion(profile.version));
                                 waitingForGuiInstaller = true;
                                 preparing.set(false);
                                 // This is an INTERNAL engine Activity, not Amethyst's
@@ -179,6 +181,23 @@ public final class SkyEngineLoaderInstaller extends Activity {
                 fail(e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
             }
         }, "SkyLauncher-Modloader-Setup").start();
+    }
+
+    // NeoForge and Forge installers can be compiled for an older Java
+    // version than the Minecraft version they install.
+    private static int minimumJavaVersion(String version) {
+        String[] pieces = version.split("\\.");
+        try {
+            if (pieces.length < 2 || !"1".equals(pieces[0])) return 21;
+            int minor = Integer.parseInt(pieces[1]);
+            int patch = pieces.length > 2 ? Integer.parseInt(pieces[2]) : 0;
+            if (minor >= 21 || (minor == 20 && patch >= 5)) return 21;
+            if (minor >= 18) return 17;
+            if (minor == 17) return 17;
+            return 8;
+        } catch (NumberFormatException e) {
+            return 21;
+        }
     }
 
     private ModLoader chooseCompatibleLoader() throws Exception {
