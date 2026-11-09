@@ -1,33 +1,34 @@
-# SkyLauncher Android — prototype
+# SkyLauncher Android 0.1.1-alpha — testbuild
 
-**Prototype, not a fully integrated Minecraft Java Edition launcher.**
+Deze Android-app is nog een **companion voor Minecraft Java-launchers**, geen volledige Minecraft-client.
 
-This native Android application (Android 8.0+, API 26+) is built as a small
-launcher-selection companion. It:
-- saves the chosen Minecraft version, mod loader and engine (Fold Craft Launcher or Amethyst);
-- recommends Java 8/16/17/21/25 by Minecraft version;
-- opens installed external launcher apps where Android exposes them;
-- otherwise opens the project's official download/instructions page;
-- links to modpack discovery.
+## Wat werkt
+- FCL of Amethyst kiezen.
+- Minecraft-versie, modloader en engine onthouden.
+- Java-versie adviseren.
+- De **officiële Amethyst.apk** van de nieuwste stabiele GitHub Releases van [AngelAuraMC](https://github.com/AngelAuraMC/Amethyst-Android/releases) automatisch downloaden.
+- De gedownloade APK controleren (Android-pakket-ID `org.angelauramc.amethyst`) en het normale Android-installatievenster openen.
+- Amethyst starten als de app geïnstalleerd is. FCL wordt geopend wanneer geïnstalleerd.
+- Modrinth/CurseForge-pagina's openen.
 
-**What it does not yet do**
-- SkyLauncher does NOT install OpenJDK into its own storage;
-- SkyLauncher does NOT automatically push the selected Java/Minecraft/profile into FCL/Amethyst;
-- SkyLauncher does NOT launch Minecraft itself, authenticate Microsoft accounts, or install modpacks;
-- Java download/management and Minecraft launch remain within the selected external launcher.
-  FCL provides a built-in multi-version runtime manager; Amethyst has a JRE manager.
+**Beveiliging:** downloaden gebeurt uitsluitend via HTTPS naar GitHub/GitHub-hosted assets. Android controleert of je de app uit deze bron mag installeren en vraagt bevestiging; SkyLauncher kan en mag niet zonder toestemming stil installeren.
 
-Only download third-party apps from the official projects, check their licenses, and
-sign into Minecraft through the selected launcher using an account with a valid entitlement.
-No Mojang/Microsoft binaries are redistributed by SkyLauncher.
+## Nog niet ondersteund
+- Java wordt NIET door SkyLauncher geïnstalleerd. Gebruik de JRE-manager in Amethyst/FCL.
+- SkyLauncher kan Minecraft nog niet zelfstandig starten; de gekozen launcher doet dit.
+- Instellingen voor Minecraft-versies of modloaders worden nog niet automatisch doorgegeven aan de gekozen launcher.
+- Geen automatische modpack-installatie of Microsoft-aanmelding vanuit SkyLauncher.
+- APK is CI-gebouwd, maar nog niet getest op een fysieke Android-telefoon.
 
-## Building
-From the repository root with Android SDK 35, JDK 17, Gradle 8.10.2:
-```sh
+## Build
+Benodigd: JDK 17, Gradle 8.10.2, Android SDK 35.
+
+```bash
 gradle -p android assembleDebug
 ```
-The installable debug APK is `android/app/build/outputs/apk/debug/app-debug.apk`.
-You can also download the `SkyLauncher-Android-Prototype-APK` artifact from
-the Android APK GitHub Actions workflow.
 
-This alpha has its own version 0.1.0-alpha and does not bump the desktop SkyLauncher 3.1.7.
+APK: `android/app/build/outputs/apk/debug/app-debug.apk`.
+
+Alternatief: download het `SkyLauncher-Android-Prototype-APK` artifact uit de [GitHub Actions Android-build](https://github.com/Newguygame/skylauncher/actions/workflows/android-apk.yml).
+
+Desktop-SkyLauncher 3.1.7 is niet aangepast of verhoogd.
