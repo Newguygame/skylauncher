@@ -30,7 +30,6 @@ public final class MainActivity extends Activity {
     private static final int PANEL = Color.argb(237, 20, 33, 52);
     private static final int WHITE = Color.rgb(238, 248, 255);
     private static final int MUTED = Color.rgb(174, 196, 213);
-    private static final int ACCENT = Color.rgb(65, 218, 204);
     private static final String FCL_PACKAGE = "com.tungsten.fcl";
     private static final String AMETHYST_PACKAGE = "org.angelauramc.amethyst";
     private static final String FCL_RELEASES = "https://github.com/FCL-Team/FoldCraftLauncher/releases";
@@ -46,6 +45,14 @@ public final class MainActivity extends Activity {
     private Button getLauncher;
     private File pendingAmethystApk;
     private boolean downloadingAmethyst;
+    private String lastProfileId = "";
+    private String lastSettings = "";
+
+    private int accent() { return SettingsActivity.accent(prefs); }
+    private String settingsSnapshot() {
+        return prefs.getInt("theme_idx", 0) + ":" + prefs.getInt("wallpaper_idx", 0)
+                + ":" + prefs.getString("accent_hex", "");
+    }
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -98,7 +105,7 @@ public final class MainActivity extends Activity {
         button.setAllCaps(false);
         button.setTextSize(15);
         button.setTextColor(highlight ? BG : WHITE);
-        button.setBackground(background(highlight ? ACCENT : Color.rgb(43, 62, 84), 12));
+        button.setBackground(background(highlight ? accent() : Color.rgb(43, 62, 84), 12));
         button.setMinHeight(dp(52));
         return button;
     }
@@ -117,13 +124,18 @@ public final class MainActivity extends Activity {
     }
 
     private void render() {
+        ProfileStore.Profile profile = ProfileStore.active(this);
+        lastProfileId = profile.id;
+        lastSettings = settingsSnapshot();
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.setBackgroundColor(Color.TRANSPARENT);
         FrameLayout frame = new FrameLayout(this);
         frame.setBackgroundColor(BG);
         ImageView wallpaper = new ImageView(this);
-        wallpaper.setImageResource(R.drawable.skylauncher_bg);
+        int[] wallpapers = {R.drawable.skylauncher_bg_1, R.drawable.skylauncher_bg_2,
+                R.drawable.skylauncher_bg_3, R.drawable.skylauncher_bg_4};
+        wallpaper.setImageResource(wallpapers[SettingsActivity.wallpaper(prefs)]);
         wallpaper.setScaleType(ImageView.ScaleType.CENTER_CROP);
         wallpaper.setAlpha(0.25f);
         frame.addView(wallpaper, new FrameLayout.LayoutParams(-1, -1));
@@ -149,7 +161,7 @@ public final class MainActivity extends Activity {
         brandTitle.setOrientation(LinearLayout.VERTICAL);
         brandTitle.setPadding(dp(12), 0, 0, 0);
         brandTitle.addView(text("SkyLauncher", 27, WHITE, true));
-        brandTitle.addView(text("Fathom Studios · Android", 13, ACCENT, false));
+        brandTitle.addView(text("Fathom Studios · Android", 13, accent(), false));
         branding.addView(brandTitle);
         add(root, branding, 14);
 
@@ -157,26 +169,43 @@ public final class MainActivity extends Activity {
         nav.setOrientation(LinearLayout.HORIZONTAL);
         Button homeTab = button("Home", true);
         Button modsTab = button("Mods", false);
+        Button profilesTab = button("Profielen", false);
         nav.addView(homeTab, new LinearLayout.LayoutParams(0, dp(50), 1));
         nav.addView(modsTab, new LinearLayout.LayoutParams(0, dp(50), 1));
+        nav.addView(profilesTab, new LinearLayout.LayoutParams(0, dp(50), 1));
         modsTab.setOnClickListener(v -> openMods());
-        add(root, nav, 20);
+        profilesTab.setOnClickListener(v -> startActivity(new Intent(this, ProfilesActivity.class)));
+        add(root, nav, 4);
+        LinearLayout nav2 = new LinearLayout(this);
+        nav2.setOrientation(LinearLayout.HORIZONTAL);
+        Button packsTab = button("Modpacks", false);
+        Button settingsTab = button("Instellingen", false);
+        Button logsTab = button("Tools & Logs", false);
+        nav2.addView(packsTab, new LinearLayout.LayoutParams(0, dp(50), 1));
+        nav2.addView(settingsTab, new LinearLayout.LayoutParams(0, dp(50), 1));
+        nav2.addView(logsTab, new LinearLayout.LayoutParams(0, dp(50), 1));
+        packsTab.setOnClickListener(v -> startActivity(new Intent(this, ModpacksActivity.class)));
+        settingsTab.setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)));
+        logsTab.setOnClickListener(v -> startActivity(new Intent(this, ToolsActivity.class)));
+        add(root, nav2, 14);
+
+        add(root, text("Actief profiel: " + profile.name + " • " + profile.ramMb + " MB voorkeur", 14, accent(), true), 14);
 
         LinearLayout intro = section(root);
         add(intro, text("Minecraft Java op Android", 20, WHITE, true), 10);
         add(intro, text(
-                "Beheer hier je Minecraft-versie, modloader en mods. Een geïntegreerde Minecraft-engine is nog in ontwikkeling; voorlopig start de game via FCL of Amethyst.",
+                "Beheer profielen, modpacks, mods en instellingen rechtstreeks in SkyLauncher. De game-engine is voorlopig nog extern (FCL of Amethyst).",
                 14, MUTED, false), 2);
 
         LinearLayout setup = section(root);
         add(setup, text("1  Kies je Minecraft-engine", 17, WHITE, true), 12);
-        engineSpinner = spinner(ENGINES, prefs.getInt("engine", 0));
+        engineSpinner = spinner(ENGINES, profile.engine);
         add(setup, engineSpinner, 14);
 
         add(setup, text("2  Minecraft-versie", 17, WHITE, true), 10);
         versionInput = new EditText(this);
         versionInput.setSingleLine(true);
-        versionInput.setText(prefs.getString("version", "1.21.1"));
+        versionInput.setText(profile.version);
         versionInput.setHint("Bijvoorbeeld 1.21.1");
         versionInput.setTextColor(WHITE);
         versionInput.setHintTextColor(MUTED);
@@ -186,10 +215,10 @@ public final class MainActivity extends Activity {
         add(setup, versionInput, 14);
 
         add(setup, text("3  Modloader", 17, WHITE, true), 10);
-        loaderSpinner = spinner(LOADERS, prefs.getInt("loader", 0));
+        loaderSpinner = spinner(LOADERS, profile.loader);
         add(setup, loaderSpinner, 12);
 
-        javaText = text("", 14, ACCENT, true);
+        javaText = text("", 14, accent(), true);
         add(setup, javaText, 12);
 
         Button launch = button("Open gekozen Minecraft-launcher", true);
@@ -255,9 +284,13 @@ public final class MainActivity extends Activity {
     }
 
     private void save() {
-        prefs.edit().putInt("engine", engine())
-                .putInt("loader", loaderSpinner.getSelectedItemPosition())
-                .putString("version", versionInput.getText().toString().trim()).apply();
+        if (engineSpinner == null || loaderSpinner == null || versionInput == null) return;
+        ProfileStore.Profile profile = ProfileStore.active(this);
+        profile.engine = engine();
+        profile.loader = loaderSpinner.getSelectedItemPosition();
+        String version = versionInput.getText().toString().trim();
+        if (!version.isEmpty()) profile.version = version;
+        ProfileStore.upsert(this, profile);
     }
 
     private int recommendedJava(String version) {
@@ -334,6 +367,11 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        if (prefs != null && !lastProfileId.isEmpty()
+                && (!lastProfileId.equals(ProfileStore.active(this).id)
+                || !lastSettings.equals(settingsSnapshot()))) {
+            render();
+        }
         if (pendingAmethystApk != null
                 && (Build.VERSION.SDK_INT < Build.VERSION_CODES.O
                 || getPackageManager().canRequestPackageInstalls())) {
