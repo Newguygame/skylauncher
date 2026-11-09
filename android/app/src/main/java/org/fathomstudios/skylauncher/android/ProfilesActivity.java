@@ -159,6 +159,9 @@ public final class ProfilesActivity extends Activity {
                             ? ProfileStore.create(nm, ver, loader.getSelectedItemPosition(),
                             engine.getSelectedItemPosition(), mb) : profile;
                     updated.name = nm;
+                    if (!ver.equals(updated.version)
+                            || updated.loader != loader.getSelectedItemPosition())
+                        updated.loaderVersion = "";
                     updated.version = ver;
                     updated.loader = loader.getSelectedItemPosition();
                     updated.engine = engine.getSelectedItemPosition();
