@@ -1,0 +1,51 @@
+plugins {
+    id 'com.android.application'
+}
+
+def skySigningFile = System.getenv('SKYLAUNCHER_ANDROID_KEYSTORE_PATH')
+def skySigningStorePassword = System.getenv('SKYLAUNCHER_ANDROID_STORE_PASSWORD')
+def skySigningKeyAlias = System.getenv('SKYLAUNCHER_ANDROID_KEY_ALIAS')
+def skySigningKeyPassword = System.getenv('SKYLAUNCHER_ANDROID_KEY_PASSWORD')
+def skyHasSigning = skySigningFile && skySigningStorePassword && skySigningKeyAlias &&
+        skySigningKeyPassword && file(skySigningFile).isFile()
+
+android {
+    signingConfigs {
+        if (skyHasSigning) {
+            skyStable {
+                storeFile file(skySigningFile)
+                storePassword skySigningStorePassword
+                keyAlias skySigningKeyAlias
+                keyPassword skySigningKeyPassword
+                enableV1Signing true
+                enableV2Signing true
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (skyHasSigning) signingConfig signingConfigs.skyStable
+        }
+    }
+    namespace 'org.fathomstudios.skylauncher.android'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'org.fathomstudios.skylauncher.android'
+        minSdk 26
+        targetSdk 36
+        versionCode 5
+        versionName '0.4.0-alpha'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.15.0'
+    implementation 'androidx.documentfile:documentfile:1.1.0'
+}
