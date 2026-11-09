@@ -8,7 +8,7 @@
         <package android:name="org.angelauramc.amethyst.debug"/>
     </queries>
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:label="SkyLauncher Android"
         android:icon="@drawable/skylauncher_desktop"
         android:theme="@android:style/Theme.Material.NoActionBar"
@@ -22,6 +22,7 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"/>
         </provider>
+        <activity android:name=".AccountActivity" android:exported="false"/>
         <activity android:name=".ProfilesActivity" android:exported="false"/>
         <activity android:name=".SettingsActivity" android:exported="false"/>
         <activity android:name=".ToolsActivity" android:exported="false"/>
