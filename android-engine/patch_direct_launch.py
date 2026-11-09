@@ -144,8 +144,8 @@ def patch_cacio_bootclasspath(engine: Path):
     txt = source.read_text(encoding="utf-8")
     anchor = '        javaArgList.add(cacioClasspath.toString());'
     txt = patch_one(txt, anchor,
-                    '        if (cacioClasspath.indexOf(":") >= 0) {\\n'
-                    '            javaArgList.add(cacioClasspath.toString());\\n'
+                    '        if (cacioClasspath.indexOf(":") >= 0) {\n'
+                    '            javaArgList.add(cacioClasspath.toString());\n'
                     '        }',
                     "empty Caciocavallo bootclasspath")
     source.write_text(txt, encoding="utf-8")
