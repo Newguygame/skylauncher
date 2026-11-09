@@ -64,6 +64,7 @@ public final class MainActivity extends Activity {
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
         prefs = getSharedPreferences("skylauncher_android", MODE_PRIVATE);
+        LogBook.write(this, "SkyLauncher Android gestart");
         render();
     }
 
@@ -357,6 +358,7 @@ public final class MainActivity extends Activity {
         if (intent != null) {
             try {
                 startActivity(intent);
+                LogBook.write(this, "Externe game-engine geopend: " + pkg);
                 return;
             } catch (Exception e) {
                 Toast.makeText(this, "Kon de gekozen launcher niet openen.", Toast.LENGTH_LONG).show();
@@ -413,6 +415,7 @@ public final class MainActivity extends Activity {
                 downloadingAmethyst = false;
                 if (getLauncher != null) getLauncher.setEnabled(true);
                 if (statusText != null) statusText.setText("Download voltooid. Android-installatie starten...");
+                LogBook.write(MainActivity.this, "Amethyst APK ontvangen; Android-installatie aangevraagd");
                 requestAndroidInstallation(apk);
             }
             @Override public void onError(String message) {
