@@ -3,6 +3,9 @@ package org.fathomstudios.skylauncher.android;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.os.Build;
+import android.provider.Settings;
+import java.io.File;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -27,9 +30,9 @@ public final class MainActivity extends Activity {
     private static final int MUTED = Color.rgb(174, 196, 213);
     private static final int ACCENT = Color.rgb(65, 218, 204);
     private static final String FCL_PACKAGE = "com.tungsten.fcl";
-    private static final String AMETHYST_PACKAGE = "net.kdt.pojavlaunch";
+    private static final String AMETHYST_PACKAGE = "org.angelauramc.amethyst";
     private static final String FCL_RELEASES = "https://github.com/FCL-Team/FoldCraftLauncher/releases";
-    private static final String AMETHYST_INSTALL = "https://wiki.angelauramc.dev/wiki/getting_started/INSTALL";
+    private static final String AMETHYST_INSTALL = "https://github.com/AngelAuraMC/Amethyst-Android/releases";
     private static final String[] ENGINES = {"Fold Craft Launcher (FCL)", "Amethyst"};
     private static final String[] LOADERS = {"NeoForge", "Fabric", "Forge", "Quilt", "Vanilla"};
     private SharedPreferences prefs;
@@ -38,6 +41,9 @@ public final class MainActivity extends Activity {
     private EditText versionInput;
     private TextView statusText;
     private TextView javaText;
+    private Button getLauncher;
+    private File pendingAmethystApk;
+    private boolean downloadingAmethyst;
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -153,8 +159,11 @@ public final class MainActivity extends Activity {
         Button launch = button("Open gekozen Minecraft-launcher", true);
         launch.setOnClickListener(v -> openLauncher());
         add(setup, launch, 12);
-        Button getLauncher = button("Download / installeer launcher", false);
-        getLauncher.setOnClickListener(v -> openUrl(engine() == 0 ? FCL_RELEASES : AMETHYST_INSTALL));
+        getLauncher = button("Download / installeer launcher", false);
+        getLauncher.setOnClickListener(v -> {
+            if (engine() == 1) confirmAmethystDownload();
+            else openUrl(FCL_RELEASES);
+        });
         add(setup, getLauncher, 10);
         statusText = text("", 13, MUTED, false);
         add(setup, statusText, 2);
@@ -241,9 +250,19 @@ public final class MainActivity extends Activity {
         save();
         javaText.setText("Aanbevolen: Java " + recommendedJava(versionInput.getText().toString()) + " (instellen in de gekozen launcher)");
         String pkg = engine() == 0 ? FCL_PACKAGE : AMETHYST_PACKAGE;
-        statusText.setText(isInstalled(pkg)
-                ? "Launcher gevonden: klaar om te openen. Stel Minecraft en Java in die app in."
-                : "Launcher niet gevonden onder het verwachte pakket-ID. Download hem via de officiële projectpagina.");
+        if (getLauncher != null) {
+            getLauncher.setText(engine() == 1
+                    ? "Amethyst automatisch installeren / bijwerken"
+                    : "FCL-downloadpagina openen");
+            getLauncher.setEnabled(!downloadingAmethyst);
+        }
+        if (!downloadingAmethyst) {
+            statusText.setText(isInstalled(pkg)
+                    ? "Launcher gevonden: klaar om te openen. Stel Minecraft en Java in die app in."
+                    : "Launcher nog niet geïnstalleerd. " + (engine() == 1
+                    ? "Gebruik de knop hierboven om Amethyst automatisch te downloaden."
+                    : "Download FCL via de officiële projectpagina."));
+        }
     }
 
     private void openLauncher() {
@@ -265,6 +284,97 @@ public final class MainActivity extends Activity {
                         openUrl(engine() == 0 ? FCL_RELEASES : AMETHYST_INSTALL))
                 .setNegativeButton("Annuleren", null)
                 .show();
+    }
+
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (pendingAmethystApk != null
+                && (Build.VERSION.SDK_INT < Build.VERSION_CODES.O
+                || getPackageManager().canRequestPackageInstalls())) {
+            File apk = pendingAmethystApk;
+            pendingAmethystApk = null;
+            launchSystemInstaller(apk);
+        } else if (statusText != null && !downloadingAmethyst) {
+            refresh();
+        }
+    }
+
+    private void confirmAmethystDownload() {
+        if (downloadingAmethyst) return;
+        new AlertDialog.Builder(this)
+                .setTitle("Amethyst via GitHub installeren")
+                .setMessage("SkyLauncher downloadt Amethyst.apk rechtstreeks vanaf de officiële GitHub Releases van AngelAuraMC. Daarna opent Android zijn eigen installatievenster en moet je zelf toestemming geven. Er worden geen Minecraft-spelbestanden meegeleverd.")
+                .setPositiveButton("Download en installeer", (dialog, which) -> startAmethystDownload())
+                .setNegativeButton("Annuleren", null)
+                .show();
+    }
+
+    private void startAmethystDownload() {
+        if (downloadingAmethyst) return;
+        downloadingAmethyst = true;
+        refresh();
+        statusText.setText("Officiële Amethyst-release ophalen...");
+        AmethystInstaller.download(this, new AmethystInstaller.Listener() {
+            @Override public void onProgress(String message) {
+                if (statusText != null) statusText.setText(message);
+            }
+            @Override public void onComplete(File apk) {
+                downloadingAmethyst = false;
+                if (getLauncher != null) getLauncher.setEnabled(true);
+                if (statusText != null) statusText.setText("Download voltooid. Android-installatie starten...");
+                requestAndroidInstallation(apk);
+            }
+            @Override public void onError(String message) {
+                downloadingAmethyst = false;
+                if (getLauncher != null) getLauncher.setEnabled(true);
+                if (statusText != null) statusText.setText("Download mislukt: " + message);
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Amethyst niet geïnstalleerd")
+                        .setMessage(message + "\n\nJe kunt Amethyst ook via de officiële releasepagina downloaden.")
+                        .setPositiveButton("Officiële releases", (d, w) -> openUrl(AMETHYST_INSTALL))
+                        .setNegativeButton("Sluiten", null)
+                        .show();
+            }
+        });
+    }
+
+    private void requestAndroidInstallation(File apk) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                && !getPackageManager().canRequestPackageInstalls()) {
+            pendingAmethystApk = apk;
+            new AlertDialog.Builder(this)
+                    .setTitle("Installatietoestemming vereist")
+                    .setMessage("Android moet toestaan dat SkyLauncher een APK-installatie start. Schakel 'Toestaan vanaf deze bron' in bij de instellingen. Vervolgens opent automatisch het Android-installatievenster.")
+                    .setPositiveButton("Open Android-instellingen", (d, w) -> {
+                        try {
+                            Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                    Uri.parse("package:" + getPackageName()));
+                            startActivity(settings);
+                        } catch (Exception e) {
+                            pendingAmethystApk = null;
+                            statusText.setText("Open handmatig Android > Apps > SkyLauncher > Onbekende apps installeren.");
+                        }
+                    })
+                    .setNegativeButton("Niet toestaan", (d, w) -> pendingAmethystApk = null)
+                    .show();
+            return;
+        }
+        launchSystemInstaller(apk);
+    }
+
+    private void launchSystemInstaller(File apk) {
+        try {
+            AmethystInstaller.openInstaller(this, apk);
+            if (statusText != null) statusText.setText("Bevestig de installatie in Android. SkyLauncher installeert niets zonder toestemming.");
+        } catch (Exception e) {
+            if (statusText != null) statusText.setText("Kon Android-installatie niet openen: " + e.getMessage());
+            new AlertDialog.Builder(this)
+                    .setTitle("Android kon de APK niet openen")
+                    .setMessage("Probeer Amethyst via de officiële GitHub-releasepagina te installeren.")
+                    .setPositiveButton("Open releases", (d, w) -> openUrl(AMETHYST_INSTALL))
+                    .setNegativeButton("Sluiten", null).show();
+        }
     }
 
     private void openUrl(String url) {
