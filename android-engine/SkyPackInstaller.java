@@ -23,6 +23,13 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.security.MessageDigest;
+import java.security.KeyStore;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateFactory;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManagerFactory;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -44,6 +51,8 @@ final class SkyPackInstaller {
     static final String FATHOM_DOWNLOAD =
             "https://github.com/" + FATHOM_REPOSITORY + "/archive/refs/heads/main.zip";
     static final String RELAY_SETTING = "curseforge_relay_url";
+    static final String DESKTOP_VPS = "https://185.83.154.171:25568";
+    private static volatile SSLSocketFactory pinnedVpsTls;
     static final long MAX_ZIP_BYTES = 1_800_000_000L;
     static final long MAX_SINGLE_FILE = 350_000_000L;
     static final long MAX_TOTAL_FILES = 4_000_000_000L;
@@ -70,11 +79,12 @@ final class SkyPackInstaller {
 
     static String relay(Context context) {
         return context.getSharedPreferences("skylauncher_android", Context.MODE_PRIVATE)
-                .getString(RELAY_SETTING, "").trim();
+                .getString(RELAY_SETTING, DESKTOP_VPS).trim();
     }
 
     static void saveRelay(Context context, String raw) {
         String value = raw.trim();
+        if (value.isEmpty()) value = DESKTOP_VPS;
         if (!value.isEmpty()) {
             try {
                 URL url = new URL(value);
@@ -93,14 +103,50 @@ final class SkyPackInstaller {
 
     static String api(Context ctx, String path) throws Exception {
         String base = relay(ctx);
-        if (base.isEmpty())
-            throw new IOException("Configure the CurseForge API relay first. "
-                    + "Its API key must stay on the relay server, never inside SkyLauncher.");
         return base + path;
     }
 
-    private static HttpURLConnection connect(String source, boolean github) throws Exception {
+    /** Dedicated certificate trust, only for the same private VPS used by desktop. */
+    private static SSLSocketFactory vpsTls(Context ctx) throws Exception {
+        if (pinnedVpsTls != null) return pinnedVpsTls;
+        synchronized (SkyPackInstaller.class) {
+            if (pinnedVpsTls != null) return pinnedVpsTls;
+            CertificateFactory factory = CertificateFactory.getInstance("X.509");
+            Certificate pinned;
+            try (InputStream input = ctx.getResources().openRawResource(
+                    net.kdt.pojavlaunch.R.raw.skylauncher_bridge_cert)) {
+                pinned = factory.generateCertificate(input);
+            }
+            KeyStore trusted = KeyStore.getInstance(KeyStore.getDefaultType());
+            trusted.load(null, null);
+            trusted.setCertificateEntry("skylauncher-desktop-vps", pinned);
+            TrustManagerFactory managers = TrustManagerFactory.getInstance(
+                    TrustManagerFactory.getDefaultAlgorithm());
+            managers.init(trusted);
+            SSLContext tls = SSLContext.getInstance("TLS");
+            tls.init(null, managers.getTrustManagers(), null);
+            pinnedVpsTls = tls.getSocketFactory();
+            return pinnedVpsTls;
+        }
+    }
+
+    private static boolean sameOrigin(URL a, URL b) {
+        int portA = a.getPort() == -1 ? a.getDefaultPort() : a.getPort();
+        int portB = b.getPort() == -1 ? b.getDefaultPort() : b.getPort();
+        return a.getProtocol().equalsIgnoreCase(b.getProtocol())
+                && a.getHost().equalsIgnoreCase(b.getHost())
+                && portA == portB;
+    }
+
+    private static boolean desktopVps(URL url) throws Exception {
+        return sameOrigin(url, new URL(DESKTOP_VPS));
+    }
+
+    private static HttpURLConnection connect(Context ctx, String source, boolean github)
+            throws Exception {
         URL url = new URL(source);
+        URL configuredVps = new URL(relay(ctx));
+        boolean relayRequest = sameOrigin(configuredVps, url);
         for (int redirects = 0; redirects < 7; redirects++) {
             if (!"https".equalsIgnoreCase(url.getProtocol()))
                 throw new IOException("Only HTTPS downloads are allowed.");
@@ -109,7 +155,14 @@ final class SkyPackInstaller {
             String host = url.getHost().toLowerCase(Locale.ROOT);
             if (github && !(host.equals("github.com") || host.equals("codeload.github.com")))
                 throw new IOException("Fathom pack download redirected outside GitHub.");
+            if (relayRequest && !sameOrigin(configuredVps, url))
+                throw new IOException("CurseForge relay redirected outside the selected VPS.");
             HttpURLConnection c = (HttpURLConnection) url.openConnection();
+            if (desktopVps(url)) {
+                // Android must not disable TLS verification or accept arbitrary
+                // certificates. Use the same pinned public certificate as desktop.
+                ((HttpsURLConnection) c).setSSLSocketFactory(vpsTls(ctx));
+            }
             c.setInstanceFollowRedirects(false);
             c.setConnectTimeout(25000);
             c.setReadTimeout(45000);
@@ -132,8 +185,8 @@ final class SkyPackInstaller {
         throw new IOException("Too many download redirects.");
     }
 
-    private static byte[] readApi(String endpoint) throws Exception {
-        HttpURLConnection c = connect(endpoint, false);
+    private static byte[] readApi(Context ctx, String endpoint) throws Exception {
+        HttpURLConnection c = connect(ctx, endpoint, false);
         try (InputStream in = c.getInputStream()) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             byte[] buf = new byte[32768];
@@ -149,14 +202,15 @@ final class SkyPackInstaller {
     }
 
     private static JSONObject jsonApi(Context ctx, String path) throws Exception {
-        return new JSONObject(new String(readApi(api(ctx, path)), "UTF-8"));
+        return new JSONObject(new String(readApi(ctx, api(ctx, path)), "UTF-8"));
     }
 
     static List<CurseProject> searchCurseForge(Context ctx, String query) throws Exception {
-        JSONObject result = jsonApi(ctx, "/v1/mods/search?gameId=432&classId=4471&pageSize=16"
-                + "&searchFilter=" + URLEncoder.encode(query.trim(), "UTF-8"));
+        // The desktop VPS uses a simplified public API: /v1/packs/search.
+        JSONObject result = jsonApi(ctx, "/v1/packs/search?q="
+                + URLEncoder.encode(query.trim(), "UTF-8"));
         JSONArray data = result.optJSONArray("data");
-        if (data == null) throw new IOException("The CurseForge relay returned no project results.");
+        if (data == null) throw new IOException("The desktop VPS returned no modpack results.");
         List<CurseProject> items = new ArrayList<>();
         for (int i = 0; i < data.length(); i++) {
             JSONObject p = data.optJSONObject(i);
@@ -168,52 +222,36 @@ final class SkyPackInstaller {
         return items;
     }
 
-    static void installCurseProject(Activity ctx, long projectId, Progress progress) throws Exception {
+    static void installCurseProject(Activity ctx, long projectId, Progress progress)
+            throws Exception {
         if (projectId <= 0) throw new IOException("Invalid CurseForge modpack ID.");
-        ProfileStore.Profile profile = ProfileStore.active(ctx);
-        progress.update("Finding a CurseForge modpack for Minecraft " + profile.version + "...");
-        JSONObject response = jsonApi(ctx, "/v1/mods/" + projectId
-                + "/files?pageSize=50&index=0");
+        String expectedProfileId = ProfileStore.active(ctx).id;
+        progress.update("Finding CurseForge pack files on the SkyLauncher VPS...");
+        JSONObject response = jsonApi(ctx, "/v1/packs/" + projectId + "/files");
         JSONArray files = response.optJSONArray("data");
         if (files == null || files.length() == 0)
-            throw new IOException("No CurseForge modpack downloads were found.");
+            throw new IOException("No downloadable CurseForge pack archives were found.");
         JSONObject chosen = null;
         for (int i = 0; i < files.length(); i++) {
-            JSONObject item = files.getJSONObject(i);
-            String name = item.optString("fileName").toLowerCase(Locale.ROOT);
-            if (!name.endsWith(".zip")) continue;
-            JSONArray versions = item.optJSONArray("gameVersions");
-            boolean matches = false;
-            if (versions != null) for (int v = 0; v < versions.length(); v++) {
-                if (profile.version.equals(versions.optString(v))) matches = true;
-            }
-            if (matches) { chosen = item; break; }
+            JSONObject item = files.optJSONObject(i);
+            if (item == null || !item.optBoolean("downloadable", true)) continue;
+            String name = item.optString("name").toLowerCase(Locale.ROOT);
+            if (name.endsWith(".zip")) { chosen = item; break; }
         }
         if (chosen == null) throw new IOException(
-                "No CurseForge modpack file matches this profile's Minecraft version.");
-        long fileId = chosen.optLong("id");
-        String downloadUrl = resolveCurseDownload(ctx, projectId, fileId, chosen);
+                "The author has not made a CurseForge modpack ZIP downloadable.");
+        long fileId = chosen.optLong("id", 0);
+        if (fileId <= 0) throw new IOException("Invalid CurseForge pack file ID.");
+        String url = api(ctx, "/v1/download/" + projectId + "/" + fileId);
         File zip = new File(ctx.getCacheDir(), "sky-cf-pack-" + projectId + ".zip");
         try {
-            progress.update("Downloading CurseForge modpack archive...");
-            download(downloadUrl, zip, MAX_ZIP_BYTES, progress, false);
-            installCurseForgeZip(ctx, zip, progress);
+            progress.update("Downloading CurseForge pack through the same VPS as desktop...");
+            download(ctx, url, zip, 512L * 1024L * 1024L, progress, false);
+            verifySha1(chosen.optString("sha1"), zip);
+            installCurseForgeZip(ctx, zip, progress, expectedProfileId);
         } finally {
             zip.delete();
         }
-    }
-
-    private static String resolveCurseDownload(Context ctx, long projectId, long fileId,
-                                               JSONObject fileMeta) throws Exception {
-        String direct = fileMeta.optString("downloadUrl");
-        if (direct.startsWith("https://")) return direct;
-        JSONObject result = jsonApi(ctx, "/v1/mods/" + projectId + "/files/"
-                + fileId + "/download-url");
-        String url = result.optString("data");
-        if (!url.startsWith("https://")) throw new IOException(
-                "CurseForge did not authorize a downloadable file for project "
-                        + projectId + ". Please use its official download page.");
-        return url;
     }
 
     static void installCurseForgeUri(Activity ctx, Uri selected, Progress progress)
@@ -222,13 +260,14 @@ final class SkyPackInstaller {
         try (InputStream in = ctx.getContentResolver().openInputStream(selected)) {
             if (in == null) throw new IOException("Cannot open the selected modpack ZIP.");
             copyToFile(in, zip, MAX_ZIP_BYTES, progress);
-            installCurseForgeZip(ctx, zip, progress);
+            installCurseForgeZip(ctx, zip, progress, ProfileStore.active(ctx).id);
         } finally {
             zip.delete();
         }
     }
 
-    private static void installCurseForgeZip(Activity ctx, File archive, Progress progress)
+    private static void installCurseForgeZip(Activity ctx, File archive, Progress progress,
+                                            String expectedProfileId)
             throws Exception {
         File stage = new File(ctx.getCacheDir(), "sky-pack-stage");
         deleteTree(stage);
@@ -272,20 +311,17 @@ final class SkyPackInstaller {
                 long projectId = f.optLong("projectID"), fileId = f.optLong("fileID");
                 if (projectId <= 0 || fileId <= 0) throw new IOException(
                         "Invalid CurseForge project/file ID.");
-                if (relay(ctx).isEmpty()) throw new IOException(
-                        "The CurseForge API relay is required to download manifest mods. "
-                                + "Set your HTTPS relay in the modpack menu.");
-                JSONObject meta = jsonApi(ctx, "/v1/mods/" + projectId + "/files/" + fileId)
-                        .getJSONObject("data");
-                String filename = meta.optString("fileName");
+                // Desktop VPS is configured by default; the API key never enters the APK.
+                JSONObject meta = jsonApi(ctx, "/v1/mods/" + projectId + "/files/" + fileId);
+                String filename = meta.optString("name");
                 if (!filename.matches("[A-Za-z0-9_.+() -]{1,180}\\.jar"))
                     throw new IOException("Unsafe or unsupported mod filename: " + filename);
                 File target = safeFile(stage, "mods/" + filename);
                 if (target.exists()) throw new IOException("Duplicate mod filename: " + filename);
-                String url = resolveCurseDownload(ctx, projectId, fileId, meta);
+                String url = api(ctx, "/v1/download/" + projectId + "/" + fileId);
                 progress.update("Downloading mod " + (i + 1) + "/" + files.length()
                         + ": " + filename);
-                download(url, target, MAX_SINGLE_FILE, progress, false);
+                download(ctx, url, target, MAX_SINGLE_FILE, progress, false);
                 verifyCurseHashes(meta, target);
                 requiredCount++;
             }
@@ -299,7 +335,7 @@ final class SkyPackInstaller {
                 progress.update("Applying pack profile: Minecraft " + gameVersion
                         + " / " + loader + "...");
             }
-            commitStage(ctx, stage, progress);
+            commitStage(ctx, stage, progress, expectedProfileId);
             selected.version = gameVersion;
             selected.loader = loaderIndex(loader);
             ProfileStore.upsert(ctx, selected);
@@ -312,13 +348,14 @@ final class SkyPackInstaller {
     }
 
     static void installFathom(Activity ctx, Progress progress) throws Exception {
+        String expectedProfileId = ProfileStore.active(ctx).id;
         File archive = new File(ctx.getCacheDir(), "sky-fathom-client-pack.zip");
         File stage = new File(ctx.getCacheDir(), "sky-pack-stage");
         deleteTree(stage);
         if (!stage.mkdirs()) throw new IOException("Unable to create install staging directory.");
         try {
             progress.update("Downloading the Fathom Studios client pack from GitHub...");
-            download(FATHOM_DOWNLOAD, archive, MAX_ZIP_BYTES, progress, true);
+            download(ctx, FATHOM_DOWNLOAD, archive, MAX_ZIP_BYTES, progress, true);
             try (ZipFile zip = new ZipFile(archive)) {
                 extractAllowed(zip, stage, null, false, progress);
             }
@@ -328,7 +365,7 @@ final class SkyPackInstaller {
                 throw new IOException("The GitHub pack archive contains no client mod JARs.");
             progress.update("Installing " + jars.length
                     + " client mods and configuration files to your Minecraft profile...");
-            commitStage(ctx, stage, progress);
+            commitStage(ctx, stage, progress, expectedProfileId);
             ProfileStore.Profile selected = ProfileStore.active(ctx);
             selected.version = "1.21.1";
             selected.loader = loaderIndex("NeoForge");
@@ -348,18 +385,17 @@ final class SkyPackInstaller {
         throw new IOException("Unsupported loader: " + name);
     }
 
-    private static File gameDir(Context ctx) throws Exception {
-        SkyEngineProfileBridge.prepareForModManagement(ctx, ProfileStore.active(ctx));
-        MinecraftProfile engine = LauncherProfiles.getCurrentProfile();
-        if (engine == null) throw new IOException("No active Minecraft engine profile.");
-        File root = Tools.getGameDirPath(engine);
-        if (!root.isDirectory() && !root.mkdirs())
-            throw new IOException("Unable to create the Minecraft game directory.");
-        return root.getCanonicalFile();
+    private static File gameDir(Context ctx, String expectedProfileId) throws Exception {
+        ProfileStore.Profile active = ProfileStore.active(ctx);
+        if (!active.id.equals(expectedProfileId))
+            throw new IOException("The active Minecraft profile changed during download. "
+                    + "The pack was not installed to another profile.");
+        return SkyEngineProfileBridge.gameDirectory(ctx, active);
     }
 
-    private static void commitStage(Context ctx, File stage, Progress progress) throws Exception {
-        File root = gameDir(ctx);
+    private static void commitStage(Context ctx, File stage, Progress progress,
+                                    String expectedProfileId) throws Exception {
+        File root = gameDir(ctx, expectedProfileId);
         List<File> files = new ArrayList<>();
         listFiles(stage, files);
         long totalSize = 0;
@@ -371,6 +407,8 @@ final class SkyPackInstaller {
         int n = 0;
         for (File source : files) {
             if (progress.cancelled()) throw new IOException("Installation cancelled.");
+            if (!ProfileStore.active(ctx).id.equals(expectedProfileId))
+                throw new IOException("Profile switched during installation; stopping to protect other worlds.");
             String relative = stage.toPath().relativize(source.toPath()).toString()
                     .replace(File.separatorChar, '/');
             File dest = safeFile(root, relative);
@@ -467,6 +505,10 @@ final class SkyPackInstaller {
     }
 
     private static void verifyCurseHashes(JSONObject meta, File file) throws Exception {
+        if (!meta.optString("sha1", "").isEmpty()) {
+            verifySha1(meta.optString("sha1"), file);
+            return;
+        }
         JSONArray hashes = meta.optJSONArray("hashes");
         if (hashes == null) return;
         for (int i = 0; i < hashes.length(); i++) {
@@ -491,6 +533,20 @@ final class SkyPackInstaller {
         }
     }
 
+    private static void verifySha1(String expected, File file) throws Exception {
+        if (expected == null || expected.isEmpty()) return;
+        MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+        try (InputStream in = new BufferedInputStream(new FileInputStream(file))) {
+            byte[] data = new byte[65536];
+            int size;
+            while ((size = in.read(data)) != -1) sha1.update(data, 0, size);
+        }
+        StringBuilder hex = new StringBuilder();
+        for (byte b : sha1.digest()) hex.append(String.format(Locale.ROOT, "%02x", b & 0xff));
+        if (!expected.equalsIgnoreCase(hex.toString()))
+            throw new IOException("CurseForge file failed SHA-1 verification: " + file.getName());
+    }
+
     private static byte[] readLimited(InputStream in, long limit) throws IOException {
         try (InputStream input = in; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             byte[] buf = new byte[8192];
@@ -503,9 +559,9 @@ final class SkyPackInstaller {
         }
     }
 
-    private static void download(String url, File target, long limit, Progress progress,
-                                 boolean github) throws Exception {
-        HttpURLConnection c = connect(url, github);
+    private static void download(Context ctx, String url, File target, long limit,
+                                 Progress progress, boolean github) throws Exception {
+        HttpURLConnection c = connect(ctx, url, github);
         try (InputStream in = new BufferedInputStream(c.getInputStream())) {
             copyToFile(in, target, limit, progress);
         } finally {
