@@ -11,6 +11,7 @@ import re
 import shutil
 from pathlib import Path
 from patch_direct_launch import patch_engine_startup
+from patch_english import patch_skylauncher_java, force_native_english
 
 PKG = "org.fathomstudios.skylauncher.android"
 CLASSES = [
@@ -54,7 +55,7 @@ def overlay_java(engine, sky):
                 'private static final String[] ENGINES = {"Fold Craft Launcher (FCL)", "Amethyst"};',
                 'private static final String[] ENGINES = {"SkyLauncher Engine (geïntegreerd)"};')
             java = java.replace('button("Open gekozen Minecraft-launcher", true)',
-                                'button("Speel Minecraft via SkyLauncher Engine", true)')
+                                'button("Play Minecraft", true)')
             java = replace(java,
                 '''getLauncher.setOnClickListener(v -> {
             if (engine() == 1) confirmAmethystDownload();
@@ -67,9 +68,10 @@ def overlay_java(engine, sky):
         save();
         javaText.setText("Minecraft-game-engine en Java-beheer zijn ingebouwd; "
                 + "de engine downloadt de benodigde runtimes en gamebestanden.");
+        if (engineSpinner != null) engineSpinner.setVisibility(android.view.View.GONE);
         if (getLauncher != null) {
-            getLauncher.setText("Engine-instellingen / modloader installeren");
-            getLauncher.setEnabled(true);
+            getLauncher.setText("Advanced engine settings");
+            getLauncher.setVisibility(android.view.View.GONE);
         }
         if (statusText != null) {
             statusText.setText("Deze APK bevat de Minecraft-engine zelf. "
@@ -118,6 +120,8 @@ def overlay_java(engine, sky):
     # Native runtime bridge only compiled into combined engine APK.
     shutil.copyfile(sky / "android-engine/SkyEngineProfileBridge.java",
                     target_dir / "SkyEngineProfileBridge.java")
+    shutil.copyfile(sky / "android-engine/SkyEngineLoaderInstaller.java",
+                    target_dir / "SkyEngineLoaderInstaller.java")
 
 
 def overlay_manifest(engine, sky):
@@ -140,7 +144,8 @@ def overlay_manifest(engine, sky):
         </activity>
 '''
     for name in ("ProfilesActivity", "SettingsActivity", "ToolsActivity",
-                 "ModpacksActivity", "ModBrowserActivity", "AccountActivity"):
+                 "ModpacksActivity", "ModBrowserActivity", "AccountActivity",
+                 "SkyEngineLoaderInstaller"):
         extra += ('        <activity android:name="' + PKG + "." + name +
                   '" android:exported="false"/>\n')
     extra += '''        <provider android:name="androidx.core.content.FileProvider"
@@ -175,8 +180,8 @@ def overlay_gradle(engine):
     text = path.read_text(encoding="utf-8")
     text = replace(text, 'applicationId "org.angelauramc.amethyst"',
                    'applicationId "' + PKG + '"')
-    text = replace(text, "versionCode 10000000", "versionCode 7")
-    text = replace(text, "versionName getVersionName()", 'versionName "0.6.0-engine-alpha"')
+    text = replace(text, "versionCode 10000000", "versionCode 8")
+    text = replace(text, "versionName getVersionName()", 'versionName "0.7.0-engine-alpha"')
     text = replace(text, "minSdkVersion 21", "minSdkVersion 26")
     # The androidnsbypass AAR requires API >=36.1; pinned upstream
     # defaults to API 36, which fails :checkDebugAarMetadata.
@@ -202,7 +207,9 @@ if __name__ == "__main__":
     if not (upstream / "app_pojavlauncher/build.gradle").is_file():
         raise SystemExit("Amethyst engine checkout ontbreekt")
     overlay_java(upstream, sky)
+    patch_skylauncher_java(upstream / "app_pojavlauncher/src/main/java" / PKG.replace(".", "/"))
     patch_engine_startup(upstream)
+    force_native_english(upstream)
     overlay_manifest(upstream, sky)
     overlay_gradle(upstream)
     print("SkyLauncher home + mods + profiles and native Minecraft engine share one APK.")
