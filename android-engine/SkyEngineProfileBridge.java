@@ -45,20 +45,13 @@ public final class SkyEngineProfileBridge {
         if (profile.version == null || !profile.version.matches("[A-Za-z0-9_.-]{1,64}")) {
             throw new IllegalArgumentException("Ongeldige Minecraft-versie in SkyLauncher-profiel.");
         }
-        LauncherProfiles.load();
-        if (LauncherProfiles.mainProfileJson == null ||
-                LauncherProfiles.mainProfileJson.profiles == null) {
-            throw new IllegalStateException("Minecraft-profielopslag kon niet worden geopend.");
-        }
+        ensureIsolatedEngineProfiles(ctx);
 
         String loader = ProfileStore.LOADERS[profile.loader].toLowerCase(Locale.ROOT);
         String actualVersion = resolveGameVersion(profile.version, loader);
         Map<String, MinecraftProfile> map = LauncherProfiles.mainProfileJson.profiles;
         MinecraftProfile target = map.get(profile.id);
-        if (target == null) {
-            target = MinecraftProfile.createTemplate();
-            target.gameDir = chooseGameDir(ctx, profile, map); // preserve existing game directory on first migration
-        }
+        if (target == null) throw new IllegalStateException("Selected profile is missing from the Minecraft engine.");
         target.name = profile.name;
         target.lastVersionId = actualVersion;
         map.put(profile.id, target);
@@ -81,49 +74,112 @@ public final class SkyEngineProfileBridge {
                 + ", versie " + actualVersion + ", RAM " + actualRam + " MB");
     }
 
-    /** Update native engine profile selection before browsing/installing mods.
-     *  Missing modloader builds must not prevent users from installing mods.
+    /**
+     * Every SkyLauncher profile has its own game directory, including saves,
+     * mods, configs, screenshots, resourcepacks and shaderpacks. Engine assets,
+     * installed version descriptors and Java runtimes remain shared read-only
+     * infrastructure in the engine's .minecraft folder.
+     *
+     * Existing unique profile directories (including a legacy default game
+     * directory for the first SkyLauncher profile) are preserved in place:
+     * migrating must never discard a user's existing worlds. Previously shared
+     * or overlapping directories are assigned to the later profile's dedicated
+     * folder, without deleting data from the old directory.
      */
-    public static void prepareForModManagement(Context ctx, ProfileStore.Profile profile) throws Exception {
+    private static synchronized void ensureIsolatedEngineProfiles(Context ctx) throws Exception {
         prepareEngine(ctx);
         LauncherProfiles.load();
-        Map<String, MinecraftProfile> profiles = LauncherProfiles.mainProfileJson.profiles;
-        MinecraftProfile nativeProfile = profiles.get(profile.id);
-        if (nativeProfile == null) {
-            nativeProfile = MinecraftProfile.createTemplate();
-            nativeProfile.gameDir = chooseGameDir(ctx, profile, profiles);
-            nativeProfile.lastVersionId = profile.version;
+        if (LauncherProfiles.mainProfileJson == null ||
+                LauncherProfiles.mainProfileJson.profiles == null) {
+            throw new IllegalStateException("Minecraft engine profiles are unavailable.");
         }
-        nativeProfile.name = profile.name;
-        profiles.put(profile.id, nativeProfile);
-        LauncherProfiles.write();
+        Map<String, MinecraftProfile> map = LauncherProfiles.mainProfileJson.profiles;
+        java.util.List<ProfileStore.Profile> skyProfiles = ProfileStore.all(ctx);
+        java.util.List<File> assigned = new java.util.ArrayList<>();
+        File storageRoot = new File(Tools.DIR_GAME_HOME).getCanonicalFile();
+        boolean changed = false;
+        for (int index = 0; index < skyProfiles.size(); index++) {
+            ProfileStore.Profile selected = skyProfiles.get(index);
+            if (selected.id == null || !selected.id.matches("[A-Za-z0-9_-]{1,72}")) {
+                throw new IllegalStateException("A SkyLauncher profile has an invalid ID.");
+            }
+            MinecraftProfile nativeProfile = map.get(selected.id);
+            if (nativeProfile == null) {
+                nativeProfile = MinecraftProfile.createTemplate();
+                // On the FIRST migration only, preserve the already-selected
+                // engine world folder. All later profiles start with empty game
+                // folders so that they never inherit other profiles' worlds.
+                if (index == 0) {
+                    String oldSelected = LauncherPreferences.DEFAULT_PREF.getString(
+                            LauncherPreferences.PREF_KEY_CURRENT_PROFILE, "");
+                    MinecraftProfile old = map.get(oldSelected);
+                    if (old != null && !selected.id.equals(oldSelected)) {
+                        nativeProfile.gameDir = old.gameDir;
+                    } else {
+                        nativeProfile.gameDir = profileRelativeDirectory(selected);
+                    }
+                } else {
+                    nativeProfile.gameDir = profileRelativeDirectory(selected);
+                }
+                changed = true;
+            }
+
+            File folder = Tools.getGameDirPath(nativeProfile).getCanonicalFile();
+            boolean safe = folder.toPath().startsWith(storageRoot.toPath())
+                    && !folder.equals(storageRoot);
+            for (File previous : assigned) {
+                if (folder.equals(previous) ||
+                        folder.toPath().startsWith(previous.toPath()) ||
+                        previous.toPath().startsWith(folder.toPath())) {
+                    safe = false;
+                }
+            }
+
+            if (!safe) {
+                String newDir = profileRelativeDirectory(selected);
+                File dedicated = new File(storageRoot, newDir).getCanonicalFile();
+                if (!dedicated.toPath().startsWith(storageRoot.toPath()))
+                    throw new IllegalStateException("Unsafe profile storage path.");
+                for (File previous : assigned) {
+                    if (dedicated.equals(previous) ||
+                            dedicated.toPath().startsWith(previous.toPath()) ||
+                            previous.toPath().startsWith(dedicated.toPath())) {
+                        throw new IllegalStateException("Profile storage paths overlap.");
+                    }
+                }
+                nativeProfile.gameDir = newDir;
+                folder = dedicated;
+                changed = true;
+                LogBook.write(ctx, "Separated previously shared Minecraft storage for "
+                        + selected.name + ". Old files remain untouched in their prior directory.");
+            }
+            assigned.add(folder);
+            map.put(selected.id, nativeProfile);
+        }
+        if (changed) LauncherProfiles.write();
+    }
+
+    private static String profileRelativeDirectory(ProfileStore.Profile p) {
+        return "skylauncher-profiles/" + p.id;
+    }
+
+    /** The sole writable Minecraft game folder for a selected SkyLauncher profile. */
+    public static synchronized File gameDirectory(Context ctx,
+                                                  ProfileStore.Profile selected) throws Exception {
+        ensureIsolatedEngineProfiles(ctx);
+        MinecraftProfile profile = LauncherProfiles.mainProfileJson.profiles.get(selected.id);
+        if (profile == null) throw new IllegalStateException("Profile mapping was not created.");
+        File root = Tools.getGameDirPath(profile).getCanonicalFile();
+        if (!root.isDirectory() && !root.mkdirs())
+            throw new IllegalStateException("Cannot create the private Minecraft profile folder.");
+        return root;
+    }
+
+    public static void prepareForModManagement(Context ctx, ProfileStore.Profile profile) throws Exception {
+        gameDirectory(ctx, profile);
         LauncherPreferences.DEFAULT_PREF.edit()
                 .putString(LauncherPreferences.PREF_KEY_CURRENT_PROFILE, profile.id)
                 .apply();
-    }
-
-    /** First SkyLauncher profile reuses the already-selected engine game directory
-     *  so that worlds/mods installed in 0.5 remain visible after the update.
-     *  Newly created second/third profiles use isolated subdirectories.
-     */
-    private static String chooseGameDir(Context ctx, ProfileStore.Profile selected,
-                                        Map<String, MinecraftProfile> engineProfiles) {
-        boolean existingSkyMapping = false;
-        for (ProfileStore.Profile sky : ProfileStore.all(ctx)) {
-            if (engineProfiles.containsKey(sky.id)) {
-                existingSkyMapping = true;
-                break;
-            }
-        }
-        if (!existingSkyMapping) {
-            String lastSelected = LauncherPreferences.DEFAULT_PREF.getString(
-                    LauncherPreferences.PREF_KEY_CURRENT_PROFILE, "");
-            MinecraftProfile oldProfile = engineProfiles.get(lastSelected);
-            if (oldProfile != null && !lastSelected.equals(selected.id)) {
-                return oldProfile.gameDir; // null means upstream's default .minecraft directory
-            }
-        }
-        return "skylauncher-profiles/" + selected.id;
     }
 
     private static long getDeviceTotalRamMb(Context ctx) {
