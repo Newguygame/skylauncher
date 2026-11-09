@@ -3,7 +3,6 @@ package org.fathomstudios.skylauncher.android;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -30,22 +29,15 @@ public final class ModBrowserActivity extends Activity {
     private TextView status;
     private TextView folderStatus;
     private EditText query;
-    private SharedPreferences prefs;
-    private Uri modsFolder;
+    private LinearLayout installedMods;
     private String gameVersion;
     private String loader;
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        prefs = getSharedPreferences("skylauncher_android", MODE_PRIVATE);
-        gameVersion = prefs.getString("version", "1.21.1");
-        String[] loaders = {"NeoForge", "Fabric", "Forge", "Quilt", "Vanilla"};
-        int idx = Math.max(0, Math.min(loaders.length - 1, prefs.getInt("loader", 0)));
-        loader = loaders[idx].toLowerCase(java.util.Locale.ROOT);
-        String saved = prefs.getString("mods_folder", "");
-        if (!saved.isEmpty()) {
-            try { modsFolder = Uri.parse(saved); } catch (Exception ignored) { }
-        }
+        ProfileStore.Profile profile = ProfileStore.active(this);
+        gameVersion = profile.version;
+        loader = ProfileStore.LOADERS[profile.loader].toLowerCase(java.util.Locale.ROOT);
         setup();
     }
 
@@ -92,17 +84,30 @@ public final class ModBrowserActivity extends Activity {
         scroll.addView(root);
 
         add(root, text("SKYLAUNCHER  /  MODS", 22, white, true), 10);
+        add(root, text("Profiel: " + ProfileStore.active(this).name, 14, teal, true), 9);
         add(root, text("Modrinth · Minecraft " + gameVersion + " · " + loader,
                 14, teal, true), 18);
-        add(root, text("Modbestanden worden direct in de map opgeslagen die je hieronder kiest. "
-                + "Kies de echte mods-map van je Minecraft-profiel. Door Android-beperkingen is "
-                + "Android/data bij veel launchers niet selecteerbaar.", 14, muted, false), 12);
+        add(root, text("SkyLauncher detecteert automatisch je eigen profielmap en eerder toegestane Minecraft-mappen. "
+                + "Je kunt ook één keer de Minecraft-map of mods-map selecteren. Android/data blijft op moderne Android-versies afgeschermd.", 14, muted, false), 12);
 
         folderStatus = text("", 13, white, false);
         add(root, folderStatus, 10);
-        Button choose = button("Kies Minecraft mods-map");
+        Button choose = button("Minecraft-map toegang geven / andere map kiezen");
         choose.setOnClickListener(v -> chooseFolder());
-        add(root, choose, 16);
+        add(root, choose, 8);
+        Button auto = button("Mods-map automatisch detecteren");
+        auto.setOnClickListener(v -> {
+            ProfileStore.Profile p = ProfileStore.active(this);
+            p.folderUri = "";
+            ProfileStore.upsert(this, p);
+            refreshFolder();
+            refreshInstalled();
+        });
+        add(root, auto, 16);
+        add(root, text("GEÏNSTALLEERDE MODS", 17, white, true), 10);
+        installedMods = new LinearLayout(this);
+        installedMods.setOrientation(LinearLayout.VERTICAL);
+        add(root, installedMods, 20);
 
         query = new EditText(this);
         query.setTextColor(white);
@@ -134,6 +139,12 @@ public final class ModBrowserActivity extends Activity {
         });
         setContentView(scroll);
         refreshFolder();
+        refreshInstalled();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if (folderStatus != null) { refreshFolder(); refreshInstalled(); }
     }
 
     private void chooseFolder() {
@@ -152,19 +163,61 @@ public final class ModBrowserActivity extends Activity {
             try {
                 getContentResolver().takePersistableUriPermission(folder,
                         Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-                modsFolder = folder;
-                prefs.edit().putString("mods_folder", folder.toString()).apply();
+                ModFolderManager.setSelectedRoot(this, folder);
                 refreshFolder();
-            } catch (SecurityException error) {
-                status.setText("Geen toegang tot de gekozen map: " + error.getMessage());
+                refreshInstalled();
+            } catch (Exception error) {
+                status.setText("Kan de map niet instellen: " + error.getMessage());
             }
         }
     }
 
     private void refreshFolder() {
-        folderStatus.setText(modsFolder == null
-                ? "Nog geen mods-map geselecteerd."
-                : "Mods-map geselecteerd (documentmap met schrijftoegang).");
+        ModFolderManager.Folder folder = ModFolderManager.resolve(this);
+        folderStatus.setText("Huidige mods-map: " + folder.label
+                + (folder.external ? "\nExterne toegang bevestigd." : "\nEigen SkyLauncher-opslag (geen automatische FCL/Amethyst-koppeling)."));
+    }
+
+    private void refreshInstalled() {
+        if (installedMods == null) return;
+        installedMods.removeAllViews();
+        List<ModFolderManager.Entry> installed = ModFolderManager.list(this);
+        if (installed.isEmpty()) {
+            add(installedMods, text("Nog geen mods gevonden in de actieve map.", 13, muted, false), 6);
+            return;
+        }
+        for (ModFolderManager.Entry entry : installed) {
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.VERTICAL);
+            card.setPadding(dp(12), dp(10), dp(12), dp(10));
+            card.setBackground(rounded(panel));
+            add(card, text(entry.name, 14, white, true), 8);
+            Button toggle = button(entry.enabled() ? "Uitschakelen" : "Inschakelen");
+            toggle.setOnClickListener(v -> {
+                try {
+                    ModFolderManager.toggle(entry);
+                    refreshInstalled();
+                } catch (Exception e) {
+                    status.setText("Mod wijzigen mislukt: " + e.getMessage());
+                }
+            });
+            add(card, toggle, 5);
+            Button remove = button("Verwijderen");
+            remove.setOnClickListener(v -> new AlertDialog.Builder(this)
+                    .setTitle("Mod verwijderen?")
+                    .setMessage(entry.name + " permanent uit de geselecteerde mods-map verwijderen?")
+                    .setPositiveButton("Verwijderen", (dialog, which) -> {
+                        try {
+                            ModFolderManager.delete(entry);
+                            refreshInstalled();
+                        } catch (Exception e) {
+                            status.setText("Verwijderen mislukt: " + e.getMessage());
+                        }
+                    })
+                    .setNegativeButton("Annuleren", null).show());
+            add(card, remove, 4);
+            add(installedMods, card, 8);
+        }
     }
 
     private void search() {
@@ -203,15 +256,6 @@ public final class ModBrowserActivity extends Activity {
     }
 
     private void promptInstall(ModrinthClient.Mod mod) {
-        if (modsFolder == null) {
-            new AlertDialog.Builder(this)
-                    .setTitle("Kies eerst de mods-map")
-                    .setMessage("Om de mod direct in de Minecraft-installatie te plaatsen, moet je eerst de mods-map van je spelprofiel selecteren.")
-                    .setPositiveButton("Kies map", (dialog, which) -> chooseFolder())
-                    .setNegativeButton("Sluiten", null)
-                    .show();
-            return;
-        }
         new AlertDialog.Builder(this)
                 .setTitle(mod.title + " installeren?")
                 .setMessage("SkyLauncher downloadt de nieuwste passende .jar van Modrinth voor "
@@ -227,9 +271,10 @@ public final class ModBrowserActivity extends Activity {
         status.setText(mod.title + " downloaden en controleren...");
         new Thread(() -> {
             try {
-                ModrinthClient.install(this, modsFolder, mod, gameVersion, loader);
+                ModrinthClient.install(this, mod, gameVersion, loader);
                 runOnUiThread(() -> {
-                    status.setText(mod.title + " geïnstalleerd in de gekozen mods-map.");
+                    status.setText(mod.title + " geïnstalleerd in de gedetecteerde mods-map.");
+                    refreshInstalled();
                     new AlertDialog.Builder(this)
                             .setTitle("Mod geïnstalleerd")
                             .setMessage(mod.title + " staat in de gekozen mods-map. "
