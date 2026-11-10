@@ -9,12 +9,12 @@
   <link rel="manifest" href="./site.webmanifest">
   <link rel="canonical" href="https://skylauncher.fathomstudios.org/">
   <meta name="theme-color" content="#0a0d12">
-  <meta name="description" content="Download the latest SkyLauncher for Windows, macOS, and Linux. A Minecraft launcher with multiple instances and mod support.">
+  <meta name="description" content="Download SkyLauncher for Windows, macOS, Linux, and Android. Manage Minecraft versions, profiles, and mods on desktop or Android.">
   <meta property="og:title" content="SkyLauncher — Downloads">
   <meta property="og:site_name" content="Fathom Studios">
   <meta property="og:image" content="https://skylauncher.fathomstudios.org/fathom-studios-logo.png">
   <meta property="og:image:alt" content="Fathom Studios logo">
-  <meta property="og:description" content="Your next Minecraft adventure starts here. Choose the SkyLauncher installer for your operating system.">
+  <meta property="og:description" content="Your next Minecraft adventure starts here. Choose SkyLauncher for Windows, macOS, Linux or Android.">
   <link rel="stylesheet" href="./styles.css">
   <title>SkyLauncher — Download</title>
   <script src="./app.js" defer></script>
@@ -61,7 +61,7 @@
 
     <section class="downloads-section wrap" id="download" aria-labelledby="download-title">
       <div class="section-header">
-        <div><p class="overline">GET STARTED</p><h2 id="download-title">Choose your platform</h2><p>Download the installer for your computer. No separate Java download needed.</p></div>
+        <div><p class="overline">GET STARTED</p><h2 id="download-title">Choose your platform</h2><p>Download a desktop installer or the experimental Android APK.</p></div>
         <div class="release-pill" id="release-pill" title="Newest published stable GitHub release">Latest release: checking…</div>
       </div>
       <div class="platform-grid">
@@ -80,9 +80,14 @@
           <h3>Linux</h3><p class="platform-description">CachyOS / Arch / Fedora<br>Ubuntu / other Linux</p>
           <div class="card-bottom"><a class="button download-button disabled" data-download="linux" aria-disabled="true" href="https://github.com/Newguygame/skylauncher/releases" tabindex="-1">Checking downloads…</a><div class="other-formats" data-alternates="linux"></div></div>
         </article>
+        <article class="platform-card" data-os="android">
+          <div class="platform-top"><div class="platform-icon android-symbol" aria-hidden="true"><svg viewBox="0 0 48 48" width="43" height="43" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><rect x="12" y="3.5" width="24" height="41" rx="5"/><path d="M19 9h10M21 39h6"/><path d="M18 19c2-4 10-4 12 0M17 24h14M18 24v7m12-7v7M21 31v4m6-4v4"/></svg></div><div class="recommend" hidden>Recommended for you</div></div>
+          <h3>Android</h3><p class="platform-description">Android phones and tablets<br>Experimental Minecraft Java APK</p>
+          <div class="card-bottom"><a class="button download-button" data-download="android" href="https://github.com/Newguygame/skylauncher/releases/download/android-latest/SkyLauncher-Android.apk">Download Android APK ↓</a><div class="other-formats" data-alternates="android">Experimental build · Not on Google Play · Android 8.0+</div></div>
+        </article>
       </div>
       <div class="downloads-footer">
-        <p id="asset-note" aria-live="polite">Downloads are provided through GitHub Releases.</p>
+        <p id="asset-note" aria-live="polite">Downloads are provided through GitHub Releases. Android is experimental, requires a Minecraft Java license, and may not run on all devices.</p>
         <div class="links"><a id="portable-link" href="https://github.com/Newguygame/skylauncher/releases" target="_blank" rel="noopener noreferrer">Portable Java version ↗</a><a href="https://github.com/Newguygame/skylauncher/releases" target="_blank" rel="noopener noreferrer">All releases ↗</a></div>
       </div>
     </section>
