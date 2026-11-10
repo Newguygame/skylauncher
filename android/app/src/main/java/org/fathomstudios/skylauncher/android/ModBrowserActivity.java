@@ -340,6 +340,97 @@ public final class ModBrowserActivity extends Activity {
         }, "SkyLauncher-Modrinth-Versions").start();
     }
 
+
+    private void showVersionDetails(ModrinthClient.Mod mod,
+                                    ModrinthClient.Version summary,
+                                    ModrinthClient.Identified replacing) {
+        if (installingMod) return;
+        status.setText("Loading changelog for " + summary.number + "...");
+        new Thread(() -> {
+            try {
+                ModrinthClient.Version details = ModrinthClient.version(summary.id);
+                runOnUiThread(() -> {
+                    if (isFinishing() || !profileId.equals(ProfileStore.active(this).id))
+                        return;
+                    String changelog = details.changelog == null
+                            || details.changelog.trim().isEmpty()
+                            ? "No changelog provided for this release."
+                            : details.changelog.trim();
+                    if (changelog.length() > 16000)
+                        changelog = changelog.substring(0, 16000)
+                                + "\n\n(Changelog truncated)";
+                    new AlertDialog.Builder(this)
+                            .setTitle(mod.title + " — " + details.display())
+                            .setMessage("Release changelog:\n\n" + changelog
+                                    + "\n\nRequired dependencies are installed automatically. "
+                                    + "Optional dependencies are skipped. "
+                                    + "Existing mods will never be overwritten silently.")
+                            .setPositiveButton(replacing == null ? "Install this version"
+                                    : "Change to this version", (d, w) ->
+                                    installSelected(mod, details, replacing))
+                            .setNegativeButton("Cancel", null)
+                            .show();
+                    status.setText("Ready: " + mod.title + " " + details.number);
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> status.setText(
+                        "Changelog lookup failed: " + e.getMessage()));
+            }
+        }, "SkyLauncher-Version-Changelog").start();
+    }
+
+    private void installSelected(ModrinthClient.Mod mod,
+                                 ModrinthClient.Version chosen,
+                                 ModrinthClient.Identified replacing) {
+        if (installingMod) return;
+        installingMod = true;
+        status.setText("Resolving dependencies for " + mod.title + "...");
+        new Thread(() -> {
+            try {
+                ModrinthClient.InstallResult result = ModrinthClient.installVersion(
+                        this, chosen.id, gameVersion, loader, replacing,
+                        new ModrinthClient.Progress() {
+                            @Override public void update(String message) {
+                                runOnUiThread(() -> {
+                                    if (!isFinishing()) status.setText(message);
+                                });
+                            }
+                            @Override public boolean cancelled() {
+                                return isFinishing();
+                            }
+                        }, profileId);
+                LogBook.write(this, "Mod installed: " + mod.title
+                        + " version " + result.version);
+                runOnUiThread(() -> {
+                    if (isFinishing()) return;
+                    refreshInstalled();
+                    status.setText("Installed " + mod.title + " " + result.version);
+                    new AlertDialog.Builder(this)
+                            .setTitle("Version installed")
+                            .setMessage(mod.title + " " + result.version
+                                    + "\nInstalled JARs: " + result.installed
+                                    + "\nRequired dependency JARs: " + result.dependencies
+                                    + "\nAlready present: " + result.alreadyPresent
+                                    + "\n\nOnly the active Minecraft profile was changed. "
+                                    + "Other mods and worlds were preserved.")
+                            .setPositiveButton("OK", null).show();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    if (isFinishing()) return;
+                    status.setText("Installation failed: " + e.getMessage());
+                    new AlertDialog.Builder(this)
+                            .setTitle("Installation failed")
+                            .setMessage(e.getMessage()
+                                    + "\n\nExisting mods were not intentionally removed.")
+                            .setPositiveButton("OK", null).show();
+                });
+            } finally {
+                installingMod = false;
+            }
+        }, "SkyLauncher-Modrinth-Dependency-Install").start();
+    }
+
     private void promptInstall(ModrinthClient.Mod mod) {
         new AlertDialog.Builder(this)
                 .setTitle(mod.title + " installeren?")
