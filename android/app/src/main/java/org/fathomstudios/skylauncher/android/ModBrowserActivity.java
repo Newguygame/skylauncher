@@ -264,6 +264,82 @@ public final class ModBrowserActivity extends Activity {
         }
     }
 
+
+    /** Identify manual and managed Modrinth mods using their file hash. */
+    private void findInstalledVersion(ModFolderManager.Entry entry) {
+        if (installingMod) {
+            status.setText("Finish the current installation first.");
+            return;
+        }
+        if (!entry.enabled()) {
+            status.setText("Enable this JAR before changing its version.");
+            return;
+        }
+        status.setText("Identifying installed mod " + entry.name + "...");
+        new Thread(() -> {
+            try {
+                if (!profileId.equals(ProfileStore.active(this).id))
+                    throw new Exception("Active profile changed.");
+                ModrinthClient.Identified known =
+                        ModrinthClient.identifyInstalled(this, entry);
+                if (known == null) {
+                    runOnUiThread(() -> new AlertDialog.Builder(this)
+                            .setTitle("Version unavailable")
+                            .setMessage(entry.name + " is not indexed by Modrinth. "
+                                    + "SkyLauncher will not change or remove it. "
+                                    + "Use mod search to find a replacement manually.")
+                            .setPositiveButton("OK", null).show());
+                    return;
+                }
+                loadVersions(new ModrinthClient.Mod(known.version.projectId,
+                        entry.name, ""), known);
+            } catch (Exception e) {
+                runOnUiThread(() -> status.setText(
+                        "Installed version lookup failed: " + e.getMessage()));
+            }
+        }, "SkyLauncher-Identify-Installed-JAR").start();
+    }
+
+    private void loadVersions(ModrinthClient.Mod mod, ModrinthClient.Identified old) {
+        if (installingMod) {
+            status.setText("Another mod installation is running.");
+            return;
+        }
+        status.setText("Loading " + mod.title + " versions...");
+        new Thread(() -> {
+            try {
+                if (!profileId.equals(ProfileStore.active(this).id))
+                    throw new Exception("Active profile changed.");
+                List<ModrinthClient.Version> versions =
+                        ModrinthClient.versions(mod.id, gameVersion, loader);
+                runOnUiThread(() -> {
+                    if (isFinishing() || !profileId.equals(ProfileStore.active(this).id))
+                        return;
+                    if (versions.isEmpty()) {
+                        status.setText("No compatible versions for "
+                                + gameVersion + " / " + loader + ".");
+                        return;
+                    }
+                    String[] labels = new String[versions.size()];
+                    for (int i = 0; i < versions.size(); i++) {
+                        ModrinthClient.Version v = versions.get(i);
+                        labels[i] = v.display() + (old != null
+                                && old.version.id.equals(v.id) ? " (installed)" : "");
+                    }
+                    new AlertDialog.Builder(this)
+                            .setTitle(mod.title + " — choose version")
+                            .setItems(labels, (dialog, which) ->
+                                    showVersionDetails(mod, versions.get(which), old))
+                            .setNegativeButton("Cancel", null)
+                            .show();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> status.setText(
+                        "Version list failed: " + e.getMessage()));
+            }
+        }, "SkyLauncher-Modrinth-Versions").start();
+    }
+
     private void promptInstall(ModrinthClient.Mod mod) {
         new AlertDialog.Builder(this)
                 .setTitle(mod.title + " installeren?")
