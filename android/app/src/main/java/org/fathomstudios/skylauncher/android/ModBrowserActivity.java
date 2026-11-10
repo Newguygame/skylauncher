@@ -32,11 +32,14 @@ public final class ModBrowserActivity extends Activity {
     private LinearLayout installedMods;
     private String gameVersion;
     private String loader;
+    private String profileId;
+    private volatile boolean installingMod;
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         ProfileStore.Profile profile = ProfileStore.active(this);
         gameVersion = profile.version;
+        profileId = profile.id;
         loader = ProfileStore.LOADERS[profile.loader].toLowerCase(java.util.Locale.ROOT);
         setup();
     }
@@ -129,7 +132,7 @@ public final class ModBrowserActivity extends Activity {
         add(root, results, 12);
 
         add(root, text("De modzoeker gebruikt de officiële Modrinth API. "
-                + "Aanvullende vereiste mods (dependencies) worden nog niet automatisch geïnstalleerd. "
+                + "Required dependencies are installed automatically from Modrinth. "
                 + "Mods in een verkeerde of niet-toegankelijke map zijn niet zichtbaar in Minecraft.",
                 12, muted, false), 1);
         scroll.setOnApplyWindowInsetsListener((view, insets) -> {
@@ -204,6 +207,9 @@ public final class ModBrowserActivity extends Activity {
                 }
             });
             add(card, toggle, 5);
+            Button changeVersion = button("Select / change version");
+            changeVersion.setOnClickListener(v -> findInstalledVersion(entry));
+            add(card, changeVersion, 5);
             Button remove = button("Verwijderen");
             remove.setOnClickListener(v -> new AlertDialog.Builder(this)
                     .setTitle("Mod verwijderen?")
@@ -251,8 +257,8 @@ public final class ModBrowserActivity extends Activity {
             card.setOrientation(LinearLayout.VERTICAL);
             add(card, text(mod.title, 17, white, true), 4);
             add(card, text(mod.description, 13, muted, false), 8);
-            Button install = button("Installeer " + mod.title);
-            install.setOnClickListener(v -> promptInstall(mod));
+            Button install = button("Choose version · " + mod.title);
+            install.setOnClickListener(v -> loadVersions(mod, null));
             add(card, install, 1);
             add(results, card, 10);
         }
