@@ -285,7 +285,7 @@ final class SkyPackInstaller {
                 throw new IOException("ZIP contains too many entries (including nested ZIPs).");
             if (entry.isDirectory()) continue;
             String raw = entry.getName().replace('\\', '/');
-            if (raw.startsWith("/") || raw.contains(":") || raw.contains("//")) {
+            if (raw.startsWith("/") || raw.contains("//") || raw.matches("(?i)^[a-z]:/.*")) {
                 throw new IOException("Unsafe ZIP path: " + raw);
             }
             String[] segments = raw.split("/", -1);
@@ -314,16 +314,8 @@ final class SkyPackInstaller {
 
             if (lower.endsWith(".jar")) {
                 scan.jarsFound++;
-                // Android filenames may contain brackets, Unicode, etc.
-                // Do not reject otherwise-valid .jar names just for punctuation.
-                boolean valid = filename.length() <= 225 && filename.length() > 4
-                        && !filename.startsWith(".") && !filename.equals("..");
-                for (int i = 0; valid && i < filename.length(); i++) {
-                    char c = filename.charAt(i);
-                    if (Character.isISOControl(c) || c == '/' || c == '\\')
-                        valid = false;
-                }
-                if (!valid) {
+                // Allow punctuation, Unicode and non-ASCII names.
+                if (!isSafeJarFileName(filename)) {
                     scan.invalidNames++;
                     continue;
                 }
@@ -539,8 +531,8 @@ final class SkyPackInstaller {
                 // Desktop VPS is configured by default; the API key never enters the APK.
                 JSONObject meta = jsonApi(ctx, "/v1/mods/" + projectId + "/files/" + fileId);
                 String filename = meta.optString("name");
-                if (!filename.matches("[A-Za-z0-9_.+() -]{1,180}\\.jar"))
-                    throw new IOException("Unsafe or unsupported mod filename: " + filename);
+                if (!isSafeJarFileName(filename))
+                    throw new IOException("Invalid filesystem path in mod filename: " + filename);
                 File target = safeFile(stage, "mods/" + filename);
                 if (target.exists()) throw new IOException("Duplicate mod filename: " + filename);
                 String url = api(ctx, "/v1/download/" + projectId + "/" + fileId);
@@ -953,21 +945,40 @@ final class SkyPackInstaller {
         }
     }
 
+    /**
+     * Allow creative JAR filenames (Unicode, brackets, punctuation and spaces).
+     * Only reject paths that cannot safely represent one filesystem filename.
+     */
+    static boolean isSafeJarFileName(String filename) {
+        if (filename == null || !filename.toLowerCase(Locale.ROOT).endsWith(".jar")
+                || filename.length() <= 4
+                || filename.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 255)
+            return false;
+        for (int i = 0; i < filename.length(); i++) {
+            char c = filename.charAt(i);
+            if (c == '/' || c == '\\' || Character.isISOControl(c)) return false;
+        }
+        return true;
+    }
+
     static boolean allowedFile(String relative) {
-        String p = relative.replace('\\', '/');
-        if (p.isEmpty() || p.startsWith("/") || p.startsWith(".")
-                || p.contains("..") || p.contains("//") || p.contains(":")) return false;
-        int slash = p.indexOf('/');
-        if (slash <= 0) return false;
-        String folder = p.substring(0, slash).toLowerCase(Locale.ROOT);
+        if (relative == null || relative.isEmpty()
+                || relative.startsWith("/") || relative.indexOf('\\') >= 0)
+            return false;
+        String[] segments = relative.split("/", -1);
+        if (segments.length < 2) return false;
+        for (String segment : segments) {
+            if (segment.isEmpty() || segment.equals(".") || segment.equals(".."))
+                return false;
+            for (int i = 0; i < segment.length(); i++)
+                if (Character.isISOControl(segment.charAt(i))) return false;
+        }
+        String folder = segments[0].toLowerCase(Locale.ROOT);
         if (!(folder.equals("mods") || folder.equals("config")
                 || folder.equals("defaultconfigs") || folder.equals("kubejs")
                 || folder.equals("scripts") || folder.equals("resourcepacks")
                 || folder.equals("shaderpacks"))) return false;
-        String leaf = p.substring(slash + 1);
-        if (leaf.isEmpty() || leaf.startsWith(".") || leaf.contains("/."))
-            return false;
-        String lower = leaf.toLowerCase(Locale.ROOT);
+        String lower = segments[segments.length - 1].toLowerCase(Locale.ROOT);
         if (lower.endsWith(".exe") || lower.endsWith(".bat") || lower.endsWith(".cmd")
                 || lower.endsWith(".sh") || lower.endsWith(".so")
                 || lower.endsWith(".dll") || lower.endsWith(".class")) return false;
