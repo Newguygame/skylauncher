@@ -279,8 +279,10 @@ final class ModrinthClient {
         validateVersion(selected, minecraft, loader);
         if (replacing != null && !selected.projectId.equals(replacing.version.projectId))
             throw new IOException("Cannot replace a mod with a different project.");
+        // Reinstalling the same version can still repair missing dependencies.
+        // Leave the existing primary JAR untouched in that case.
         if (replacing != null && selected.id.equals(replacing.version.id))
-            return new InstallResult(0, 0, 1, selected.number);
+            replacing = null;
 
         File stage = new File(ctx.getCacheDir(), "sky-mods-" + UUID.randomUUID());
         if (!stage.mkdirs()) throw new IOException("Cannot create mod staging area.");
@@ -520,6 +522,8 @@ final class ModrinthClient {
         }
 
         List<Downloaded> needed = new ArrayList<>();
+        Set<String> stagedNames = new HashSet<>();
+        Set<String> stagedIds = new HashSet<>();
         int already = 0;
         for (Downloaded item : downloads) {
             File sameName = existingNames.get(item.filename.toLowerCase(Locale.ROOT));
@@ -552,6 +556,15 @@ final class ModrinthClient {
                 // Do not replace user-managed CurseForge or local JARs.
                 already++;
                 continue;
+            }
+            String plannedName = item.filename.toLowerCase(Locale.ROOT);
+            if (!stagedNames.add(plannedName))
+                throw new IOException("Two selected dependencies use the same filename: "
+                        + item.filename);
+            for (String modId : newModIds) {
+                if (!stagedIds.add(modId))
+                    throw new IOException("Two downloaded mods provide the same mod ID: "
+                            + modId + ". Choose compatible versions manually.");
             }
             needed.add(item);
         }
@@ -618,7 +631,12 @@ final class ModrinthClient {
             }
             throw failure;
         }
-        return new InstallResult(needed.size(), Math.max(0, needed.size() - 1),
+        int dependenciesInstalled = 0;
+        for (Downloaded item : needed) {
+            if (!selected.projectId.equals(item.version.projectId))
+                dependenciesInstalled++;
+        }
+        return new InstallResult(needed.size(), dependenciesInstalled,
                 already, selected.number);
     }
 
