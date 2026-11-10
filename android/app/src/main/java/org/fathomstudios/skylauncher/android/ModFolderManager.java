@@ -163,8 +163,18 @@ final class ModFolderManager {
     }
 
     static void save(Context context, String name, byte[] bytes) throws Exception {
-        if (!name.matches("[a-zA-Z0-9_.+() -]{1,180}\\.jar"))
-            throw new Exception("Ongeldige modbestandsnaam");
+        // Accept normal mod JAR filenames regardless of language or punctuation.
+        // Only path separators, control characters, and filesystem length
+        // limitations are rejected to keep the file in the selected mods folder.
+        if (name == null || !name.toLowerCase(Locale.ROOT).endsWith(".jar")
+                || name.length() <= 4
+                || name.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 255
+                || name.indexOf('/') >= 0 || name.indexOf('\\\\') >= 0)
+            throw new Exception("The mod must have a valid .jar filename.");
+        for (int i = 0; i < name.length(); i++) {
+            if (Character.isISOControl(name.charAt(i)))
+                throw new Exception("Mod filename contains an unsupported control character.");
+        }
         Folder folder = resolve(context);
         if (folder.document != null) {
             if (folder.document.findFile(name) != null)
