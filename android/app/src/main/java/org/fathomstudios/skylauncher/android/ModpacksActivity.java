@@ -18,10 +18,12 @@ import java.util.List;
 /** English modpack browser and real installers for the embedded game engine. */
 public final class ModpacksActivity extends Activity {
     private static final int PICK_CURSEFORGE_ZIP = 719;
+    private static final int PICK_LOCAL_MODS_ZIP = 720;
+    private String localZipProfileId;
     private LinearLayout results, curseResults;
     private TextView status, installationStatus, currentProfile, updateStatus;
     private EditText searchBox, curseQuery, relayBox;
-    private Button fathomButton, zipButton, curseSearch, updateButton, applyUpdateButton;
+    private Button fathomButton, zipButton, localZipButton, curseSearch, updateButton, applyUpdateButton;
     private volatile boolean busy;
     private volatile boolean cancelRequested;
     private int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
@@ -81,6 +83,8 @@ public final class ModpacksActivity extends Activity {
 
     @Override public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (savedInstanceState != null)
+            localZipProfileId = savedInstanceState.getString("localZipProfileId");
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(0xff0b1424);
         scroll.setOnApplyWindowInsetsListener((v, insets) -> {
@@ -155,6 +159,27 @@ public final class ModpacksActivity extends Activity {
         });
         add(curse, zipButton, 8);
 
+        LinearLayout localMods = section(root, "Import Mods from ZIP");
+        add(localMods, text("Choose any ZIP containing .jar mod files (for example "
+                + "mods/, overrides/mods/, or loose JARs). No CurseForge manifest "
+                + "or internet connection is needed. Mods go only into the active "
+                + "profile; existing files, configs and worlds are preserved.",
+                14, 0xffc0d1e3), 12);
+        localZipButton = button("Import Mods from ZIP");
+        localZipButton.setOnClickListener(v -> {
+            if (busy) return;
+            localZipProfileId = ProfileStore.active(this).id;
+            Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            pick.setType("application/zip");
+            pick.addCategory(Intent.CATEGORY_OPENABLE);
+            pick.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            pick.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                    "application/zip", "application/x-zip-compressed",
+                    "application/octet-stream"});
+            startActivityForResult(pick, PICK_LOCAL_MODS_ZIP);
+        });
+        add(localMods, localZipButton, 8);
+
         LinearLayout modrinth = section(root, "Modrinth Modpacks");
         add(modrinth, text("Browse modpacks compatible with the current version "
                 + "and modloader. Install a verified .mrpack directly into your active profile.",
@@ -217,6 +242,7 @@ public final class ModpacksActivity extends Activity {
         fathomButton.setEnabled(false);
         curseSearch.setEnabled(false);
         zipButton.setEnabled(false);
+        localZipButton.setEnabled(false);
         installationStatus.setText("Preparing modpack...");
         new Thread(() -> {
             SkyPackInstaller.Progress listener = new SkyPackInstaller.Progress() {
@@ -254,6 +280,7 @@ public final class ModpacksActivity extends Activity {
                     fathomButton.setEnabled(true);
                     curseSearch.setEnabled(true);
                     zipButton.setEnabled(true);
+                    localZipButton.setEnabled(true);
                     checkPackUpdates();
                 });
             }
@@ -267,7 +294,22 @@ public final class ModpacksActivity extends Activity {
                 && data.getData() != null) {
             Uri selected = data.getData();
             beginTask(p -> SkyPackInstaller.installCurseForgeUri(this, selected, p));
+        } else if (request == PICK_LOCAL_MODS_ZIP && result == RESULT_OK && data != null
+                && data.getData() != null) {
+            String expected = localZipProfileId;
+            if (expected == null || !expected.equals(ProfileStore.active(this).id)) {
+                installationStatus.setText("Profile changed; select the ZIP again.");
+                return;
+            }
+            Uri selected = data.getData();
+            beginTask(p -> SkyPackInstaller.importLocalModsZip(this, selected, expected, p));
         }
+    }
+
+    @Override protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        if (localZipProfileId != null)
+            outState.putString("localZipProfileId", localZipProfileId);
     }
 
     @Override protected void onResume() {
