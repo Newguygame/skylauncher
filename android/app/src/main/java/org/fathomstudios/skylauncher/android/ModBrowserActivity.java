@@ -431,41 +431,4 @@ public final class ModBrowserActivity extends Activity {
         }, "SkyLauncher-Modrinth-Dependency-Install").start();
     }
 
-    private void promptInstall(ModrinthClient.Mod mod) {
-        new AlertDialog.Builder(this)
-                .setTitle(mod.title + " installeren?")
-                .setMessage("SkyLauncher downloadt de nieuwste passende .jar van Modrinth voor "
-                        + gameVersion + " / " + loader
-                        + " en schrijft hem naar de geselecteerde mods-map. "
-                        + "Vereiste afhankelijkheden worden nog niet automatisch geïnstalleerd.")
-                .setPositiveButton("Installeer", (d, w) -> install(mod))
-                .setNegativeButton("Annuleren", null)
-                .show();
-    }
-
-    private void install(ModrinthClient.Mod mod) {
-        status.setText(mod.title + " downloaden en controleren...");
-        new Thread(() -> {
-            try {
-                ModrinthClient.install(this, mod, gameVersion, loader);
-                LogBook.write(this, "Mod geïnstalleerd: " + mod.title);
-                runOnUiThread(() -> {
-                    status.setText(mod.title + " geïnstalleerd in de gedetecteerde mods-map.");
-                    refreshInstalled();
-                    new AlertDialog.Builder(this)
-                            .setTitle("Mod geïnstalleerd")
-                            .setMessage(mod.title + " staat in de gekozen mods-map. "
-                                    + "Start Minecraft met dezelfde Minecraft-versie en modloader; "
-                                    + "installeer eventueel ook vereiste dependencies.")
-                            .setPositiveButton("OK", null).show();
-                });
-            } catch (Exception e) {
-                runOnUiThread(() -> new AlertDialog.Builder(this)
-                        .setTitle("Installatie mislukt")
-                        .setMessage(e.getMessage())
-                        .setPositiveButton("OK", null)
-                        .show());
-            }
-        }, "Modrinth-Install").start();
-    }
 }
