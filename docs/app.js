@@ -8,6 +8,7 @@
   // Android uses a separate rolling prerelease, never the desktop stable tag.
   const ANDROID_API = `https://api.github.com/repos/${OWNER}/${REPO}/releases/tags/android-latest`;
   const ANDROID_RELEASES = `${RELEASES}/tag/android-latest`;
+  const ANDROID_APK = `${RELEASES}/download/android-latest/SkyLauncher-Android.apk`;
   const $ = selector => document.querySelector(selector);
   const link = asset => asset.browser_download_url;
 
@@ -124,10 +125,11 @@
     button.classList.remove('disabled');
     button.removeAttribute('aria-disabled');
     button.removeAttribute('tabindex');
-    button.href = ANDROID_RELEASES;
-    button.textContent = 'View Android releases ↗';
+    // The stable GitHub release asset link works even when the API is rate-limited.
+    button.href = ANDROID_APK;
+    button.textContent = 'Download Android APK ↓';
     $('[data-alternates="android"]').textContent =
-      'Experimental Android APK · Download availability may vary';
+      'Experimental APK · Also available in GitHub Releases';
   }
 
   async function loadAndroid() {
