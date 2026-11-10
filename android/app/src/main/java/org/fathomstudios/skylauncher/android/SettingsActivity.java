@@ -8,6 +8,7 @@ import android.os.Bundle;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -91,7 +92,18 @@ public final class SettingsActivity extends Activity {
         ram.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
         ram.setText(String.valueOf(prefs.getInt("generic_memory_mb", 4096)));
         add(panel, ram, 10);
-        add(panel, text("RAM is voorlopig profielmetadata; de externe Minecraft-engine beheert zijn eigen JVM-geheugen.", 12), 15);
+        add(panel, text("The built-in engine applies profile RAM on launch. "
+                + "Keep enough memory available for Android.", 12), 15);
+        add(panel, text("Gameplay memory optimization", 17), 8);
+        CheckBox lowMemory = new CheckBox(this);
+        lowMemory.setText("Close SkyLauncher UI when starting Minecraft (recommended)");
+        lowMemory.setTextColor(fg);
+        lowMemory.setChecked(prefs.getBoolean("low_memory_gameplay", true));
+        add(panel, lowMemory, 6);
+        add(panel, text("Frees the launcher's wallpaper and interface while Minecraft "
+                + "runs. The game engine stays active; reopen SkyLauncher from its icon "
+                + "after exiting Minecraft. Does not put the entire Android app "
+                + "into system deep sleep.", 12), 15);
         Button save = new Button(this);
         save.setAllCaps(false);
         save.setText("Instellingen opslaan");
@@ -114,6 +126,7 @@ public final class SettingsActivity extends Activity {
                     .putString("accent_hex", hex)
                     .putInt("wallpaper_idx", wallpaper.getSelectedItemPosition())
                     .putInt("generic_memory_mb", memory)
+                    .putBoolean("low_memory_gameplay", lowMemory.isChecked())
                     .apply();
             Toast.makeText(this, "Stijl opgeslagen", Toast.LENGTH_SHORT).show();
             finish();
