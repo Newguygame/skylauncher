@@ -273,6 +273,16 @@ public final class SkyEngineProfileBridge {
             intent.putExtra(EXTRA_PROFILE_ID, profile.id);
             intent.putExtra(EXTRA_PROFILE_NAME, profile.name);
             activity.startActivity(intent);
+            // This APK contains the launcher UI and the embedded game engine
+            // in one Android process. We cannot system-hibernate the whole app
+            // without stopping Minecraft. Destroy just the launcher Activity,
+            // releasing its wallpapers and view hierarchy while the engine runs.
+            // The launcher reopens normally from the home screen afterwards.
+            if (activity instanceof MainActivity && ProfileStore.prefs(activity)
+                    .getBoolean("low_memory_gameplay", true)) {
+                LogBook.write(activity, "Gameplay memory saver: closed launcher UI.");
+                activity.finish();
+            }
         } catch (MissingModloaderException e) {
             Intent install = new Intent(activity, SkyEngineLoaderInstaller.class);
             install.putExtra(SkyEngineLoaderInstaller.EXTRA_PROFILE_ID, profile.id);
