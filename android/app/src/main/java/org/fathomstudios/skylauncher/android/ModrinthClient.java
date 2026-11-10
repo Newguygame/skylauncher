@@ -257,7 +257,10 @@ final class ModrinthClient {
         List<Version> all = versions(mod.id, minecraft, loader);
         if (all.isEmpty()) throw new IOException("No compatible mod release found.");
         return installVersion(ctx, all.get(0).id, minecraft, loader, null,
-                message -> {}, null);
+                new Progress() {
+                    @Override public void update(String message) {}
+                    @Override public boolean cancelled() { return false; }
+                }, null);
     }
 
     static InstallResult installVersion(Context ctx, String selectedVersionId,
@@ -561,7 +564,7 @@ final class ModrinthClient {
         boolean removedOld = false;
         try {
             // Stage all checksums and dependencies before touching installed files.
-            if (replacingFile != null && !needed.isEmpty()) {
+            if (replacingFile != null) {
                 if (!backupDir.isDirectory() && !backupDir.mkdirs())
                     throw new IOException("Cannot create version rollback backup.");
                 savedPrevious = new File(backupDir, replacingFile.getName());
