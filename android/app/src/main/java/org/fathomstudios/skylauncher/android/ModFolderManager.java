@@ -169,7 +169,7 @@ final class ModFolderManager {
         if (name == null || !name.toLowerCase(Locale.ROOT).endsWith(".jar")
                 || name.length() <= 4
                 || name.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 255
-                || name.indexOf('/') >= 0 || name.indexOf('\\\\') >= 0)
+                || name.indexOf('/') >= 0 || name.indexOf('\\') >= 0)
             throw new Exception("The mod must have a valid .jar filename.");
         for (int i = 0; i < name.length(); i++) {
             if (Character.isISOControl(name.charAt(i)))
