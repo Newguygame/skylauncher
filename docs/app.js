@@ -5,6 +5,9 @@
   const REPO = 'skylauncher';
   const RELEASES = `https://github.com/${OWNER}/${REPO}/releases`;
   const API = `https://api.github.com/repos/${OWNER}/${REPO}/releases/latest`;
+  // Android uses a separate rolling prerelease, never the desktop stable tag.
+  const ANDROID_API = `https://api.github.com/repos/${OWNER}/${REPO}/releases/tags/android-latest`;
+  const ANDROID_RELEASES = `${RELEASES}/tag/android-latest`;
   const $ = selector => document.querySelector(selector);
   const link = asset => asset.browser_download_url;
 
@@ -17,6 +20,8 @@
   function detectOS() {
     const platform = String(navigator.userAgentData?.platform || navigator.platform || '').toLowerCase();
     const agent = navigator.userAgent.toLowerCase();
+    // Android reports Linux as its platform on many devices.
+    if (agent.includes('android') || platform.includes('android')) return 'android';
     if (/windows|win32|win64/.test(platform) || agent.includes('windows')) return 'windows';
     if (/mac|darwin/.test(platform) || agent.includes('macintosh')) return 'macos';
     if (/linux|x11/.test(platform) || agent.includes('linux')) return 'linux';
@@ -113,6 +118,55 @@
       : 'Installers are not available in this release yet. See All releases for other downloads.';
   }
 
+  function showAndroidFallback() {
+    const button = $('[data-download="android"]');
+    if (!button) return;
+    button.classList.remove('disabled');
+    button.removeAttribute('aria-disabled');
+    button.removeAttribute('tabindex');
+    button.href = ANDROID_RELEASES;
+    button.textContent = 'View Android releases ↗';
+    $('[data-alternates="android"]').textContent =
+      'Experimental Android APK · Download availability may vary';
+  }
+
+  async function loadAndroid() {
+    const button = $('[data-download="android"]');
+    if (!button) return;
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      let response;
+      try {
+        response = await fetch(ANDROID_API, {
+          headers: {'Accept': 'application/vnd.github+json'},
+          signal: controller.signal,
+          cache: 'no-store',
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+      if (!response.ok) throw Error('Android release HTTP ' + response.status);
+      const release = await response.json();
+      if (!Array.isArray(release.assets)) throw Error('Invalid Android release assets');
+      const asset = release.assets.find(a =>
+        a?.name === 'SkyLauncher-Android.apk' && isSafeAsset(a) &&
+        a.size > 1_000_000);
+      if (!asset) throw Error('No downloadable Android APK in this release');
+      button.classList.remove('disabled');
+      button.removeAttribute('aria-disabled');
+      button.removeAttribute('tabindex');
+      button.href = link(asset);
+      button.textContent = 'Download Android APK ↓';
+      button.title = asset.name;
+      $('[data-alternates="android"]').textContent =
+        'Experimental APK · Integrated Minecraft Java engine';
+    } catch (error) {
+      console.info('SkyLauncher Android release lookup:', error.message);
+      showAndroidFallback();
+    }
+  }
+
   function setError(error) {
     for (const os of ['windows', 'macos', 'linux']) setUnavailable(os);
     $('#release-pill').textContent = 'No installer release available';
@@ -141,9 +195,11 @@
   if (os) {
     const card = $(`.platform-card[data-os="${os}"]`);
     if (card) { card.classList.add('recommended'); card.querySelector('.recommend').hidden = false; }
-    const label = {windows: 'Download for Windows', macos: 'Download for macOS', linux: 'Download for Linux'};
+    const label = {windows: 'Download for Windows', macos: 'Download for macOS',
+      linux: 'Download for Linux', android: 'Download for Android'};
     $('#hero-download-label').textContent = label[os];
   }
   $('#retry').addEventListener('click', load);
   load();
+  loadAndroid();
 })();
