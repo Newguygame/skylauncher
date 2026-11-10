@@ -358,7 +358,8 @@ final class ModrinthClient {
                         + " has no Modrinth project/version ID; install it manually.");
             }
             validateVersion(required, minecraft, loader);
-            pinned.put(required.projectId, idSafe(versionId));
+            pinned.put(required.projectId, Boolean.TRUE.equals(pinned.get(required.projectId))
+                    || idSafe(versionId));
             progress.update("Resolving required dependency: " + required.name);
             resolveDependencies(required, minecraft, loader, plan, active,
                     pinned, progress, false, depth + 1);
@@ -522,7 +523,9 @@ final class ModrinthClient {
         int already = 0;
         for (Downloaded item : downloads) {
             File sameName = existingNames.get(item.filename.toLowerCase(Locale.ROOT));
-            if (sameName != null && (replacingFile == null || !sameName.equals(replacingFile))) {
+            boolean isSelectedMod = item.version.projectId.equals(selected.projectId);
+            if (sameName != null && (!isSelectedMod || replacingFile == null
+                    || !sameName.equals(replacingFile))) {
                 if (item.hash.equalsIgnoreCase(hashFile(sameName))) {
                     already++;
                     continue;
@@ -534,13 +537,14 @@ final class ModrinthClient {
             File conflict = null;
             for (String modId : newModIds) {
                 File found = existingModIds.get(modId);
-                if (found != null && (replacingFile == null || !found.equals(replacingFile))) {
+                if (found != null && (!isSelectedMod || replacingFile == null
+                        || !found.equals(replacingFile))) {
                     conflict = found;
                     break;
                 }
             }
             if (conflict != null) {
-                if (item == downloads.get(downloads.size() - 1) || item.requiredPinned)
+                if (isSelectedMod || item.requiredPinned)
                     throw new IOException("Conflicting installed mod " + conflict.getName()
                             + " with " + item.filename
                             + ". Change its version explicitly instead of duplicating it.");
