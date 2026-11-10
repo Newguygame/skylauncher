@@ -261,15 +261,120 @@ final class SkyPackInstaller {
 
 
     /**
-     * Import local .jar mods from a ZIP into the currently selected, isolated
-     * Minecraft game directory. This does not use CurseForge or change the
-     * Minecraft version/loader, pack update metadata, configs, or worlds.
-     *
-     * Supported layouts: mod.jar, mods/mod.jar, overrides/mods/mod.jar,
-     * or the same paths beneath one or more archive root folders.
-     * Existing mod files are preserved; any files added by a failed import
-     * are removed so that a cancelled import cannot leave a partial pack.
+     * Local ZIP import independent of CurseForge, Modrinth and pack update records.
+     * Scans every directory and (one level of) nested ZIP archives rather than
+     * looking only for the literal mods/ folder. Keeps imported mods inside
+     * the selected SkyLauncher engine profile.
      */
+    private static final class LocalJarScan {
+        final List<File> files = new ArrayList<>();
+        final List<String> names = new ArrayList<>();
+        final Set<String> seenNames = new HashSet<>();
+        int entries, jarsFound, duplicateNames, invalidNames, nestedZips, nestedFailures;
+        int manifestReferences;
+        long extractedBytes;
+    }
+
+    private static void scanLocalJarZip(ZipFile archive, File stage, Progress progress,
+                                        LocalJarScan scan, int depth) throws Exception {
+        java.util.Enumeration<? extends ZipEntry> zipEntries = archive.entries();
+        while (zipEntries.hasMoreElements()) {
+            if (progress.cancelled()) throw new IOException("ZIP import cancelled.");
+            ZipEntry entry = zipEntries.nextElement();
+            if (++scan.entries > MAX_ENTRIES)
+                throw new IOException("ZIP contains too many entries (including nested ZIPs).");
+            if (entry.isDirectory()) continue;
+            String raw = entry.getName().replace('\\', '/');
+            if (raw.startsWith("/") || raw.contains(":") || raw.contains("//")) {
+                throw new IOException("Unsafe ZIP path: " + raw);
+            }
+            String[] segments = raw.split("/", -1);
+            for (String part : segments) {
+                if (part.isEmpty() || part.equals(".") || part.equals(".."))
+                    throw new IOException("Unsafe ZIP path: " + raw);
+            }
+            String filename = segments[segments.length - 1];
+            String lower = filename.toLowerCase(Locale.ROOT);
+
+            // Manifest-only CurseForge packs store references, not the actual JARs.
+            if (lower.equals("manifest.json") && depth == 0
+                    && entry.getSize() <= 1_000_000L) {
+                try (InputStream input = archive.getInputStream(entry)) {
+                    JSONObject json = new JSONObject(new String(
+                            readLimited(input, 1_000_000), "UTF-8"));
+                    if ("minecraftModpack".equals(json.optString("manifestType"))) {
+                        JSONArray dependencies = json.optJSONArray("files");
+                        if (dependencies != null)
+                            scan.manifestReferences += dependencies.length();
+                    }
+                } catch (Exception ignored) {
+                    // A non-CurseForge manifest must not block local mod import.
+                }
+            }
+
+            if (lower.endsWith(".jar")) {
+                scan.jarsFound++;
+                // Android filenames may contain brackets, Unicode, etc.
+                // Do not reject otherwise-valid .jar names just for punctuation.
+                boolean valid = filename.length() <= 225 && filename.length() > 4
+                        && !filename.startsWith(".") && !filename.equals("..");
+                for (int i = 0; valid && i < filename.length(); i++) {
+                    char c = filename.charAt(i);
+                    if (Character.isISOControl(c) || c == '/' || c == '\\')
+                        valid = false;
+                }
+                if (!valid) {
+                    scan.invalidNames++;
+                    continue;
+                }
+                String key = filename.toLowerCase(Locale.ROOT);
+                if (!scan.seenNames.add(key)) {
+                    // Two different folders may contain the same mod filename.
+                    // Never overwrite one silently or create renamed duplicate
+                    // mod jars (which can lead to duplicate mod IDs).
+                    scan.duplicateNames++;
+                    continue;
+                }
+                if (entry.getSize() > MAX_SINGLE_FILE)
+                    throw new IOException("JAR exceeds the size limit: " + filename);
+                File extracted = new File(stage, "import-" + scan.files.size() + ".jar");
+                try (InputStream input = archive.getInputStream(entry)) {
+                    copyToFile(input, extracted, MAX_SINGLE_FILE, progress);
+                }
+                scan.extractedBytes += extracted.length();
+                if (scan.extractedBytes > MAX_TOTAL_FILES)
+                    throw new IOException("ZIP contains too much JAR data.");
+                scan.files.add(extracted);
+                scan.names.add(filename);
+                if (scan.files.size() % 20 == 0)
+                    progress.update("Found " + scan.jarsFound + " JARs; prepared "
+                            + scan.files.size() + " for import...");
+            } else if (depth == 0 && lower.endsWith(".zip")
+                    && scan.nestedZips < 20
+                    && entry.getSize() <= MAX_SINGLE_FILE
+                    && !raw.toLowerCase(Locale.ROOT).contains("resourcepacks/")
+                    && !raw.toLowerCase(Locale.ROOT).contains("shaderpacks/")) {
+                scan.nestedZips++;
+                File nested = File.createTempFile("sky-nested-", ".zip", stage);
+                try {
+                    try (InputStream input = archive.getInputStream(entry)) {
+                        copyToFile(input, nested, MAX_SINGLE_FILE, progress);
+                    }
+                    try (ZipFile inner = new ZipFile(nested)) {
+                        scanLocalJarZip(inner, stage, progress, scan, depth + 1);
+                    }
+                } catch (IOException invalidArchive) {
+                    // Unreadable nested ZIPs are reported, not silently treated
+                    // as having zero mods.
+                    if (progress.cancelled()) throw invalidArchive;
+                    scan.nestedFailures++;
+                } finally {
+                    nested.delete();
+                }
+            }
+        }
+    }
+
     static void importLocalModsZip(Activity ctx, Uri selected,
                                    String expectedProfileId, Progress progress)
             throws Exception {
@@ -279,127 +384,89 @@ final class SkyPackInstaller {
         File archive = File.createTempFile("sky-local-mods-", ".zip", ctx.getCacheDir());
         File stage = new File(ctx.getCacheDir(),
                 "sky-local-mods-stage-" + java.util.UUID.randomUUID());
-        if (!stage.mkdirs()) throw new IOException("Cannot create ZIP import staging folder.");
+        if (!stage.mkdirs()) throw new IOException("Cannot create ZIP staging folder.");
         List<File> installed = new ArrayList<>();
-        int skipped = 0;
+        int alreadyInstalled = 0;
+        LocalJarScan scan = new LocalJarScan();
         try {
-            progress.update("Reading local ZIP (no CurseForge download)...");
+            progress.update("Scanning ZIP for JARs in every folder...");
             try (InputStream input = ctx.getContentResolver().openInputStream(selected)) {
-                if (input == null) throw new IOException("Cannot open the chosen ZIP.");
+                if (input == null) throw new IOException("Cannot open the selected ZIP.");
                 copyToFile(input, archive, MAX_ZIP_BYTES, progress);
             }
-            List<File> candidates = new ArrayList<>();
-            Set<String> seen = new HashSet<>();
-            long extracted = 0L;
-            int entryCount = 0;
             try (ZipFile zip = new ZipFile(archive)) {
-                java.util.Enumeration<? extends ZipEntry> entries = zip.entries();
-                while (entries.hasMoreElements()) {
-                    if (progress.cancelled()) throw new IOException("ZIP import cancelled.");
-                    ZipEntry entry = entries.nextElement();
-                    if (++entryCount > MAX_ENTRIES)
-                        throw new IOException("ZIP contains too many entries.");
-                    if (entry.isDirectory()) continue;
-                    String raw = entry.getName().replace('\\', '/');
-                    if (raw.startsWith("/") || raw.contains(":") || raw.contains("//")) {
-                        throw new IOException("Unsafe path inside ZIP: " + raw);
-                    }
-                    String[] segments = raw.split("/", -1);
-                    for (String segment : segments) {
-                        if (segment.isEmpty() || segment.equals(".") || segment.equals(".."))
-                            throw new IOException("Unsafe path inside ZIP: " + raw);
-                    }
-                    String filename = segments[segments.length - 1];
-                    if (!filename.toLowerCase(Locale.ROOT).endsWith(".jar")) continue;
-                    boolean modFolder = segments.length == 1;
-                    for (int i = 0; i < segments.length - 1; i++) {
-                        if (segments[i].equalsIgnoreCase("mods")) modFolder = true;
-                    }
-                    if (!modFolder) continue;
-                    if (!filename.matches("(?i)[A-Za-z0-9_.+() -]{1,180}\\.jar")
-                            || filename.startsWith(".")) {
-                        throw new IOException("Unsupported mod filename: " + filename);
-                    }
-                    String key = filename.toLowerCase(Locale.ROOT);
-                    if (!seen.add(key))
-                        throw new IOException("Duplicate mod filename in ZIP: " + filename);
-                    if (entry.getSize() > MAX_SINGLE_FILE)
-                        throw new IOException("Mod file exceeds size limit: " + filename);
-                    File extractedFile = new File(stage, filename);
-                    try (InputStream content = zip.getInputStream(entry)) {
-                        copyToFile(content, extractedFile, MAX_SINGLE_FILE, progress);
-                    }
-                    extracted += extractedFile.length();
-                    if (extracted > MAX_TOTAL_FILES)
-                        throw new IOException("ZIP contains too much mod data.");
-                    candidates.add(extractedFile);
-                    if (candidates.size() % 20 == 0)
-                        progress.update("Prepared " + candidates.size() + " mod files...");
-                }
+                scanLocalJarZip(zip, stage, progress, scan, 0);
             }
-            if (candidates.isEmpty())
-                throw new IOException("No .jar mods found. Use ZIPs containing loose JARs "
-                        + "or a mods/ folder. For manifest-only CurseForge exports, "
-                        + "use Import CurseForge modpack ZIP.");
-
+            if (scan.files.isEmpty()) {
+                throw new IOException("Found " + scan.jarsFound + " JARs inside ZIP; "
+                        + scan.manifestReferences + " CurseForge manifest references. "
+                        + "No importable JARs. If this is a manifest-only CurseForge "
+                        + "export, use Import CurseForge modpack ZIP instead.");
+            }
             if (!expectedProfileId.equals(ProfileStore.active(ctx).id))
-                throw new IOException("Active profile changed before installing mods.");
+                throw new IOException("Active profile changed before importing mods.");
             File root = gameDir(ctx, expectedProfileId);
             File mods = new File(root, "mods").getCanonicalFile();
             if (!mods.toPath().startsWith(root.getCanonicalFile().toPath())
                     || java.nio.file.Files.isSymbolicLink(mods.toPath()))
-                throw new IOException("Unsafe Minecraft mods directory.");
+                throw new IOException("Unsafe profile mods directory.");
             if (!mods.isDirectory() && !mods.mkdirs())
-                throw new IOException("Cannot create this profile's mods directory.");
-            if (mods.getUsableSpace() < extracted + 100_000_000L)
-                throw new IOException("Not enough free storage for extracted mods.");
+                throw new IOException("Could not create Minecraft mods folder.");
+            if (mods.getUsableSpace() < scan.extractedBytes + 100_000_000L)
+                throw new IOException("Not enough free storage for mods.");
             Set<String> existingNames = new HashSet<>();
-            File[] existingFiles = mods.listFiles();
-            if (existingFiles == null) throw new IOException("Cannot read mods folder.");
-            for (File file : existingFiles)
-                existingNames.add(file.getName().toLowerCase(Locale.ROOT));
+            File[] existing = mods.listFiles();
+            if (existing == null) throw new IOException("Cannot list mods directory.");
+            for (File f : existing)
+                existingNames.add(f.getName().toLowerCase(Locale.ROOT));
             try {
-                int completed = 0;
-                for (File source : candidates) {
+                for (int index = 0; index < scan.files.size(); index++) {
                     if (progress.cancelled()) throw new IOException("ZIP import cancelled.");
                     if (!expectedProfileId.equals(ProfileStore.active(ctx).id))
                         throw new IOException("Profile switched during ZIP import.");
-                    String name = source.getName();
-                    if (existingNames.contains(name.toLowerCase(Locale.ROOT))) {
-                        skipped++;
+                    String filename = scan.names.get(index);
+                    if (existingNames.contains(filename.toLowerCase(Locale.ROOT))) {
+                        alreadyInstalled++;
                         continue;
                     }
-                    File dest = new File(mods, name);
+                    File target = new File(mods, filename);
                     File pending = File.createTempFile(".sky-import-", ".part", mods);
                     try {
-                        java.nio.file.Files.copy(source.toPath(), pending.toPath(),
+                        java.nio.file.Files.copy(scan.files.get(index).toPath(),
+                                pending.toPath(),
                                 java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                         if (progress.cancelled()) throw new IOException("ZIP import cancelled.");
                         if (!expectedProfileId.equals(ProfileStore.active(ctx).id))
                             throw new IOException("Profile switched during ZIP import.");
-                        // Never overwrite an installed mod, even if another task
-                        // created it while this ZIP was being imported.
-                        java.nio.file.Files.move(pending.toPath(), dest.toPath());
-                        installed.add(dest);
-                        existingNames.add(name.toLowerCase(Locale.ROOT));
-                        if (++completed % 20 == 0)
-                            progress.update("Installed " + completed + "/" + candidates.size()
-                                    + " mods...");
+                        java.nio.file.Files.move(pending.toPath(), target.toPath());
+                        installed.add(target);
+                        existingNames.add(filename.toLowerCase(Locale.ROOT));
+                        if (installed.size() % 20 == 0)
+                            progress.update("Installed " + installed.size()
+                                    + " of " + scan.files.size() + " prepared JARs...");
                     } finally {
                         pending.delete();
                     }
                 }
-            } catch (Exception failed) {
+            } catch (Exception failure) {
                 for (int i = installed.size() - 1; i >= 0; i--) {
                     if (!installed.get(i).delete())
-                        failed.addSuppressed(new IOException(
-                                "Could not roll back: " + installed.get(i).getName()));
+                        failure.addSuppressed(new IOException(
+                                "Could not undo: " + installed.get(i).getName()));
                 }
-                throw failed;
+                throw failure;
             }
-            progress.completed("Imported " + installed.size() + " mods into "
-                    + ProfileStore.active(ctx).name + "; skipped " + skipped
-                    + " existing mods. No other profiles or worlds were changed.");
+            String summary = "ZIP JARs found: " + scan.jarsFound
+                    + " | imported: " + installed.size()
+                    + " | already installed: " + alreadyInstalled
+                    + " | duplicate names: " + scan.duplicateNames
+                    + " | invalid names: " + scan.invalidNames
+                    + " | nested ZIP errors: " + scan.nestedFailures
+                    + " | CurseForge manifest references (not included): "
+                    + scan.manifestReferences;
+            LogBook.write(ctx, "Local ZIP import: " + summary);
+            progress.completed(summary + ". Files installed only into profile "
+                    + ProfileStore.active(ctx).name + ".");
         } finally {
             archive.delete();
             deleteTree(stage);
