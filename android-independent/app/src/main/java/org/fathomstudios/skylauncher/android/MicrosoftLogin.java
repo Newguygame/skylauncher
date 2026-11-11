@@ -43,6 +43,8 @@ final class MicrosoftLogin {
     private static final String PREFS = "skylauncher_minecraft_account";
     private static final String KEYSTORE_ALIAS = "SkyLauncherAndroidMicrosoftRefresh";
     private static final int MAX_RESPONSE = 512_000;
+    private static final java.util.regex.Pattern MICROSOFT_ERROR_ID =
+            java.util.regex.Pattern.compile("AADSTS[0-9]{5,8}");
 
     interface Listener {
         void deviceCode(String code, String verificationUri);
@@ -184,13 +186,20 @@ final class MicrosoftLogin {
         return request(endpoint, "GET", null, null, authorization);
     }
 
+    /**
+     * Microsoft and Xbox may legitimately return non-2xx JSON errors. Device
+     * polling 400 authorization_pending and slow_down are protocol states,
+     * not login failures. All other errors are labeled with their failing
+     * authorization stage and HTTP code, without logging bearer tokens.
+     */
     private static JSONObject request(String endpoint, String method, String contentType,
-                                       byte[] body, String authorization) throws Exception {
+                                      byte[] body, String authorization) throws Exception {
         URL url = new URL(endpoint);
         if (!"https".equalsIgnoreCase(url.getProtocol()) ||
                 !isAllowedMicrosoftHost(url.getHost())) {
-            throw new Exception("Onveilig authenticatie-adres.");
+            throw new Exception("Authentication endpoint is not approved.");
         }
+        final String stage = authorizationStage(endpoint);
         HttpURLConnection c = (HttpURLConnection) url.openConnection();
         c.setConnectTimeout(18000);
         c.setReadTimeout(25000);
@@ -205,33 +214,83 @@ final class MicrosoftLogin {
         }
         try {
             int http = c.getResponseCode();
+            if (http >= 300 && http < 400)
+                throw new Exception(stage + ": unexpected HTTP redirect " + http);
             InputStream stream = http >= 400 ? c.getErrorStream() : c.getInputStream();
-            if (stream == null) throw new Exception("Authserver gaf geen antwoord (" + http + ")");
+            if (stream == null)
+                throw new Exception(stage + ": HTTP " + http + " with empty response.");
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             try (InputStream in = stream) {
-                byte[] b = new byte[8192];
+                byte[] buffer = new byte[8192];
                 int n;
-                while ((n = in.read(b)) != -1) {
-                    if (out.size() + n > MAX_RESPONSE)
-                        throw new Exception("Authserver-antwoord te groot.");
-                    out.write(b, 0, n);
+                while ((n = in.read(buffer)) != -1) {
+                    if ((long)out.size() + n > MAX_RESPONSE)
+                        throw new Exception(stage + ": response size limit exceeded.");
+                    out.write(buffer, 0, n);
                 }
             }
-            JSONObject json = new JSONObject(out.toString("UTF-8"));
-            if (http >= 400 && !"authorization_pending".equals(json.optString("error")) &&
-                    !"slow_down".equals(json.optString("error"))) {
-                String safeCode = json.optString("error", "HTTP " + http);
-                if (http == 403 && endpoint.contains("minecraftservices.com")) {
-                    throw new Exception("Minecraft Services weigerde de app (403). "
-                            + "Controleer de Microsoft/Minecraft-toestemming van de SkyLauncher-appregistratie.");
+            JSONObject json;
+            try {
+                json = new JSONObject(out.toString("UTF-8"));
+            } catch (org.json.JSONException parse) {
+                // Never display the raw server payload: it might contain
+                // sensitive account data, access tokens or verification codes.
+                throw new Exception(stage + ": HTTP " + http
+                        + " (server returned invalid JSON).");
+            }
+            if (http >= 400) {
+                String code = json.optString("error", "");
+                if ("Microsoft token".equals(stage)
+                        && ("authorization_pending".equals(code)
+                            || "slow_down".equals(code)))
+                    return json;
+                String description = json.optString("error_description", "");
+                java.util.regex.Matcher match = MICROSOFT_ERROR_ID.matcher(description);
+                String aadsts = match.find() ? " " + match.group() : "";
+                String xerr = "";
+                long xboxError = json.optLong("XErr", -1L);
+                if (xboxError > 0) xerr = " Xbox/XSTS=" + xboxError;
+                String safeCode = code.isEmpty() ? "" : " [" + cleanError(code) + "]";
+                String hint = "";
+                if ("Microsoft device code".equals(stage)
+                        || "Microsoft token".equals(stage)) {
+                    if ("unauthorized_client".equals(code) || "invalid_client".equals(code))
+                        hint = " SkyLauncher's Microsoft app registration may not "
+                                + "permit public-client device authorization.";
+                    else if ("invalid_scope".equals(code))
+                        hint = " SkyLauncher's OAuth permission scopes are not allowed.";
+                } else if (http == 403 && stage.startsWith("Minecraft")) {
+                    hint = " Minecraft Services denied the login. The application "
+                            + "may need Minecraft Services authorization.";
+                } else if (http == 404 && "Minecraft profile".equals(stage)) {
+                    hint = " No owned Minecraft Java profile was found.";
                 }
-                if (http == 404 && endpoint.contains("minecraft/profile")) {
-                    throw new Exception("Dit account heeft geen geldig Minecraft Java-profiel.");
-                }
-                throw new Exception("Microsoft/Minecraft antwoord: " + cleanError(safeCode));
+                throw new Exception(stage + ": HTTP " + http + safeCode + aadsts
+                        + xerr + hint);
+            }
+            if (json.has("error")) {
+                String error = json.optString("error", "");
+                if (!error.isEmpty()) throw new Exception(stage + ": "
+                        + cleanError(error));
             }
             return json;
-        } finally { c.disconnect(); }
+        } catch (java.net.SocketTimeoutException timeout) {
+            throw new Exception(stage + ": network timeout.", timeout);
+        } catch (java.net.UnknownHostException dns) {
+            throw new Exception(stage + ": DNS lookup failed.", dns);
+        } finally {
+            c.disconnect();
+        }
+    }
+
+    private static String authorizationStage(String endpoint) {
+        if (endpoint.contains("/devicecode")) return "Microsoft device code";
+        if (endpoint.contains("/oauth2/v2.0/token")) return "Microsoft token";
+        if (endpoint.contains("user.auth.xboxlive.com")) return "Xbox Live";
+        if (endpoint.contains("xsts.auth.xboxlive.com")) return "Xbox XSTS";
+        if (endpoint.contains("login_with_xbox")) return "Minecraft authentication";
+        if (endpoint.contains("minecraft/profile")) return "Minecraft profile";
+        return "Microsoft/Minecraft authorization";
     }
 
     private static boolean isAllowedMicrosoftHost(String host) {
