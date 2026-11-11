@@ -162,7 +162,8 @@ def patch_auto_installer_return(engine: Path):
     jre_text = patch_one(jre_text,
         '        Logger.appendToLog("Java Exit code: " + exitCode);',
         '''        Logger.appendToLog("Java Exit code: " + exitCode);
-        if (activity.getIntent().getBooleanExtra("skylauncher_auto_finish", false)) {
+        if (activity.getIntent().getBooleanExtra("skylauncher_auto_finish", false)
+                || activity.getIntent().getBooleanExtra("skylauncher_loader_runner", false)) {
             activity.getSharedPreferences("skylauncher_installer_exit",
                     android.content.Context.MODE_PRIVATE)
                     .edit()
@@ -171,6 +172,15 @@ def patch_auto_installer_return(engine: Path):
                     .commit();
         }''',
         "capture native modloader installer exit status before process termination")
+    # Only SkyLauncher's dedicated modloader runtime returns to its Activity.
+    # Regular Minecraft still uses the engine's normal native shutdown flow.
+    jre_text = patch_one(jre_text,
+        "        Tools.fullyExit();",
+        '''        if (activity.getIntent().getBooleanExtra("skylauncher_loader_runner", false)) {
+            return;
+        }
+        Tools.fullyExit();''',
+        "return from SkyLauncher-owned loader JVM without exiting Android process")
     jre_utils.write_text(jre_text, encoding="utf-8")
 
     java_util = engine / "app_pojavlauncher/src/main/java/net/kdt/pojavlaunch/NewJREUtil.java"
