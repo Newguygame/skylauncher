@@ -2,6 +2,7 @@ package org.fathomstudios.skylauncher.android;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
@@ -108,11 +109,19 @@ public final class MainActivity extends Activity {
         add(container, info, 25);
 
         add(container, label("Minecraft launch", 21, Color.WHITE), 8);
-        add(container, label("Not yet available: Android-compatible Java 21 "
-                + "runtime, native LWJGL/GLFW compatibility, rendering and input "
-                + "still need to be implemented and tested independently.",
+        add(container, label("Test SkyLauncher's own graphics interface and inspect "
+                + "the exact requirements needed before starting Minecraft. "
+                + "Real gameplay is not enabled until Android Java 21, LWJGL "
+                + "and Microsoft account support work.",
                 14, 0xffc2d0df), 12);
-        Button play = button("Play Minecraft (not ready)");
+        Button inspect = button("Check Minecraft launch requirements");
+        inspect.setOnClickListener(v -> checkLaunchRequirements());
+        add(container, inspect, 12);
+        Button graphics = button("Test independent Android graphics");
+        graphics.setOnClickListener(v ->
+                startActivity(new Intent(this, SkyGraphicsActivity.class)));
+        add(container, graphics, 12);
+        Button play = button("Play Minecraft (engine incomplete)");
         play.setEnabled(false);
         add(container, play, 20);
     }
@@ -229,6 +238,40 @@ public final class MainActivity extends Activity {
                 });
             }
         }, "SkyLauncher-Independent-Modloader-Initializer").start();
+    }
+
+
+    private void checkLaunchRequirements() {
+        if (!installing.compareAndSet(false, true)) {
+            Toast.makeText(this, "Another installation is running.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final ProfileStore.Profile selected = profile;
+        info.setText("Checking installed Minecraft files and Java prerequisites...");
+        new Thread(() -> {
+            try {
+                final SkyLaunchPlan.Plan plan = SkyLaunchPlan.preflight(this, selected);
+                runOnUiThread(() -> {
+                    if (isFinishing()) return;
+                    info.setText("Minecraft preflight completed: "
+                            + plan.blockers.size() + " launch blockers.");
+                    new AlertDialog.Builder(this)
+                            .setTitle("SkyLauncher Minecraft launch preflight")
+                            .setMessage(plan.report())
+                            .setPositiveButton("OK", null)
+                            .show();
+                });
+            } catch (Exception failure) {
+                runOnUiThread(() -> {
+                    if (!isFinishing()) info.setText("Launch verification error: "
+                            + (failure.getMessage() == null
+                            ? failure.getClass().getSimpleName()
+                            : failure.getMessage()));
+                });
+            } finally {
+                installing.set(false);
+            }
+        }, "SkyLauncher-Launch-Preflight").start();
     }
 
 }
