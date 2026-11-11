@@ -1,0 +1,28 @@
+name: Inspect standalone Android OpenJDK 21 runtime
+on:
+  push:
+    branches: [feature/android-independent-engine]
+    paths: ['.github/workflows/runtime-inspect.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Download checksum-verified standalone OpenJDK runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 2 --max-time 180 \
+            -o /tmp/skylauncher-java21.tar.xz \
+            "https://github.com/AngelAuraMC/angelauramc-openjdk-build/releases/download/release/jre21-android-arm64.tar.xz"
+          echo "8d41ec401ee59f7722df60ed991f81ad146e130452804bfdd8a05d3436f7bbfe  /tmp/skylauncher-java21.tar.xz" | sha256sum -c -
+          echo "ARCHIVE_SIZE=$(stat -c%s /tmp/skylauncher-java21.tar.xz)"
+          tar -tJf /tmp/skylauncher-java21.tar.xz | head -n 50 || true
+          echo "JVM_FILES:"
+          tar -tJf /tmp/skylauncher-java21.tar.xz | grep -E 'libjvm.so|/modules$|/libjava.so|/libjli.so|/release$' | head -n 35 || true
+          echo "SOURCE_LISTED: standalone OpenJDK component, not a Minecraft launcher"
