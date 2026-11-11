@@ -1,18 +1,9 @@
 name: Publish SkyLauncher Android download
 
+# Manual publishing only. Test APKs stay in Actions artifacts for chat delivery.
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/publish-android.yml'
   workflow_dispatch:
-  workflow_run:
-    workflows: ["SkyLauncher Android Integrated Minecraft Engine (experimental)"]
-    types: [completed]
-    branches: [feature/android-integrated-engine]
 
-# Android is published separately from stable desktop versions. The rolling
-# prerelease does not change the desktop SkyLauncher version or latest tag.
 permissions:
   actions: read
   contents: write
