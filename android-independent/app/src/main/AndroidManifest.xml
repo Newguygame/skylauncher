@@ -6,6 +6,10 @@
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:usesCleartextTraffic="false"
         android:allowBackup="false">
+        <activity android:name=".SkyMinecraftGameActivity"
+            android:process=":minecraft"
+            android:exported="false"
+            android:screenOrientation="unspecified"/>
         <activity android:name=".SkyGraphicsActivity"
             android:exported="false"
             android:screenOrientation="unspecified"/>
