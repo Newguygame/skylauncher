@@ -115,6 +115,10 @@ final class SkyModloaderInitializer {
         File target = new File(folder, id + ".json");
         writeAtomic(target, raw);
         check(stop);
+        // Resolve loader-side Maven dependencies independently. Minecraft's
+        // base libraries are handled by SkyGameInstaller.
+        SkyLoaderLibraryInstaller.install(ctx, descriptor, kind, stop, progress::update);
+        check(stop);
         record(ctx, p, new Result(kind, newest, id, false));
         progress.update(kind + " " + newest + " profile prepared. Native game launcher "
                 + "is still required for playing.");
