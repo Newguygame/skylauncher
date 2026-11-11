@@ -165,11 +165,20 @@ final class SkyLaunchPlan {
         if (Build.SUPPORTED_ABIS.length == 0 || !Build.SUPPORTED_ABIS[0].startsWith("arm64")) {
             missing.add("This development runtime currently targets Android ARM64 only.");
         }
-        if (!new File(context.getApplicationInfo().nativeLibraryDir, "libjvm.so").isFile())
-            missing.add("Independent Android OpenJDK 21 runtime is not packaged.");
-        if (!new File(context.getApplicationInfo().nativeLibraryDir, "liblwjgl.so").isFile())
-            missing.add("Android-compatible LWJGL native bindings are not packaged.");
-        missing.add("Microsoft Minecraft ownership and authentication are not connected.");
+        File javaHome = new File(context.getFilesDir(), "minecraft/runtimes/java21");
+        if (!new File(javaHome, "lib/server/libjvm.so").isFile()
+                || !new File(javaHome, "lib/modules").isFile())
+            missing.add("Android ARM64 OpenJDK 21 runtime has not been installed.");
+        File nativeLib = new File(context.getApplicationInfo().nativeLibraryDir);
+        if (!new File(nativeLib, "liblwjgl.so").isFile()
+                || !new File(nativeLib, "libglfw.so").isFile())
+            missing.add("Minecraft-compatible Android LWJGL/GLFW libraries are not packaged.");
+        if (!new File(nativeLib, "libOSMesa.so").isFile()
+                && !new File(nativeLib, "libGL.so").isFile())
+            missing.add("Desktop OpenGL renderer (Mesa Zink or compatible) not packaged.");
+        if (MicrosoftLogin.username(context).isEmpty()
+                || MicrosoftLogin.uuid(context).isEmpty())
+            missing.add("Sign in to a licensed Minecraft Java Microsoft account.");
         return new Plan(requested, mainClass, String.join(":", classpath),
                 gameDir, assetsRoot, assetId, args, missing, libraryCount);
     }
