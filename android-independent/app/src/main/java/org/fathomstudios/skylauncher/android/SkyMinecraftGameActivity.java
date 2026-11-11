@@ -23,6 +23,7 @@ import java.util.Map;
  */
 public final class SkyMinecraftGameActivity extends Activity {
     public static final String EXTRA_PROFILE_ID = "skylauncher.minecraft.profile";
+    public static final String EXTRA_JAVA_SMOKE = "skylauncher.java_smoke";
     private TextView status;
     private static final boolean JNI_LOADED;
     static {
@@ -85,6 +86,29 @@ public final class SkyMinecraftGameActivity extends Activity {
         return (int) Math.min(4096, Math.max(1024, ram * 40 / 100));
     }
 
+    private void testHotSpotRuntime() throws Exception {
+        if (!SkyJavaRuntimeInstaller.ready(this))
+            throw new IllegalStateException("Install the bundled Android OpenJDK 21 "
+                    + "runtime in SkyLauncher before testing Java startup.");
+        report("Testing native OpenJDK 21 HotSpot JVM inside isolated Minecraft process...");
+        File jar = new File(getFilesDir(), "skylauncher-java21-probe.jar");
+        try (java.io.InputStream in = getAssets().open("skyjava-probe.jar");
+             java.io.FileOutputStream out = new java.io.FileOutputStream(jar)) {
+            byte[] buffer = new byte[16384];
+            int count;
+            while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
+            out.getFD().sync();
+        }
+        File runtime = SkyJavaRuntimeInstaller.runtimeHome(this);
+        String result = nativeLaunchMinecraft(runtime.getAbsolutePath(),
+                jar.getAbsolutePath(), "org.fathomstudios.skylauncher.probe.SkyJavaProbe",
+                getFilesDir().getAbsolutePath(), new String[0], 512,
+                getApplicationInfo().nativeLibraryDir);
+        report("Standalone OpenJDK 21 execution test:\n" + result
+                + "\n\nIf it reports a linker failure, send that exact message. "
+                + "If the app closes, share the Android crash log.");
+    }
+
     private void launch() {
         try {
             String id = getIntent().getStringExtra(EXTRA_PROFILE_ID);
@@ -93,6 +117,10 @@ public final class SkyMinecraftGameActivity extends Activity {
                 throw new IllegalStateException("Minecraft profile changed; launch cancelled.");
             if (!JNI_LOADED)
                 throw new IllegalStateException("SkyLauncher native Java bridge is missing.");
+            if (getIntent().getBooleanExtra(EXTRA_JAVA_SMOKE, false)) {
+                testHotSpotRuntime();
+                return;
+            }
             if (!"Vanilla".equals(profile.loader))
                 throw new IllegalStateException("Modded Minecraft needs the independent "
                         + "LWJGL and Java installer backend. Vanilla is the first target.");
