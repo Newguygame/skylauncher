@@ -184,10 +184,9 @@ final class SkyLaunchPlan {
         if (Build.SUPPORTED_ABIS.length == 0 || !Build.SUPPORTED_ABIS[0].startsWith("arm64")) {
             missing.add("This development runtime currently targets Android ARM64 only.");
         }
-        File javaHome = new File(context.getFilesDir(), "minecraft/runtimes/java21");
-        if (!new File(javaHome, "lib/server/libjvm.so").isFile()
-                || !new File(javaHome, "lib/modules").isFile())
-            missing.add("Android ARM64 OpenJDK 21 runtime has not been installed.");
+        if (!SkyJavaRuntimeInstaller.ready(context))
+            missing.add("Android ARM64 OpenJDK 21 is not yet installed. "
+                    + "Tap Install Android OpenJDK 21 runtime.");
         File nativeLib = new File(context.getApplicationInfo().nativeLibraryDir);
         if (!new File(nativeLib, "liblwjgl.so").isFile()
                 || !new File(nativeLib, "libglfw.so").isFile())
