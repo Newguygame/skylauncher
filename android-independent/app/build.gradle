@@ -13,6 +13,13 @@ android {
         versionCode 10
         versionName 'independent-engine-dev'
     }
+    ndkVersion '27.3.13750724'
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+            version '3.22.1'
+        }
+    }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
