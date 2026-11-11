@@ -159,8 +159,12 @@ public final class MainActivity extends Activity {
         graphics.setOnClickListener(v ->
                 startActivity(new Intent(this, SkyGraphicsActivity.class)));
         add(container, graphics, 12);
-        Button play = button("Play Minecraft (engine incomplete)");
-        play.setEnabled(false);
+        Button play = button("Start Minecraft (experimental JNI)");
+        play.setOnClickListener(v -> {
+            Intent game = new Intent(this, SkyMinecraftGameActivity.class);
+            game.putExtra(SkyMinecraftGameActivity.EXTRA_PROFILE_ID, profile.id);
+            startActivity(game);
+        });
         add(container, play, 20);
     }
 
