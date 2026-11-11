@@ -42,4 +42,24 @@ jobs:
           print('Device flow enabled:', bool(response.get('verification_uri')) and bool(response.get('user_code')))
           # Never emit device_code, access tokens, user_code, or full response.
           if code != 200: sys.exit(1)
+          # The first polling call should return HTTP 400 authorization_pending.
+          # That response is expected, not a login failure.
+          request2 = urllib.request.Request(
+              'https://login.microsoftonline.com/consumers/oauth2/v2.0/token',
+              data=urllib.parse.urlencode({
+                  'grant_type':'urn:ietf:params:oauth:grant-type:device_code',
+                  'client_id':'54473e32-df8f-42e9-a649-9419b0dab9d3',
+                  'device_code':response['device_code'],
+              }).encode('utf-8'),
+              headers={'Content-Type':'application/x-www-form-urlencoded'})
+          try:
+              with urllib.request.urlopen(request2, timeout=15) as result:
+                  pollHttp=result.status; poll=json.load(result)
+          except urllib.error.HTTPError as failure:
+              pollHttp=failure.code
+              poll=json.loads(failure.read(100000).decode('utf-8','replace'))
+          print('Token polling HTTP code:',pollHttp)
+          print('Token polling safe error type:',poll.get('error','none'))
+          if pollHttp != 400 or poll.get('error') != 'authorization_pending':
+              sys.exit(2)
           PY
