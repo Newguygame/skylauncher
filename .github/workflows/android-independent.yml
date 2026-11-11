@@ -47,6 +47,17 @@ jobs:
             "https://github.com/AngelAuraMC/angelauramc-openjdk-build/releases/download/download_jre21/jre21-android-arm64.tar.xz"
           echo "8d41ec401ee59f7722df60ed991f81ad146e130452804bfdd8a05d3436f7bbfe  android-independent/app/src/main/assets/jre21-android-arm64.tar.xz" | sha256sum -c -
           echo "SkyLauncher standalone OpenJDK runtime archive verified"
+      - name: Bundle SkyLauncher-owned Java 21 VM smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/skyjava-probe
+          javac -d /tmp/skyjava-probe \
+            android-independent/runtime-probe/org/fathomstudios/skylauncher/probe/SkyJavaProbe.java
+          jar --create \
+            --file android-independent/app/src/main/assets/skyjava-probe.jar \
+            -C /tmp/skyjava-probe .
+          test -s android-independent/app/src/main/assets/skyjava-probe.jar
       - name: Build independent app (no upstream engine checkout)
         working-directory: android-independent
         run: gradle :app:assembleDebug --no-daemon --stacktrace
