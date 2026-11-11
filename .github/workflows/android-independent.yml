@@ -37,6 +37,16 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10.2'
+      - name: Bundle verified ARM64 OpenJDK 21 runtime (not launcher code)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p android-independent/app/src/main/assets
+          curl -fL --retry 3 --max-time 180 \
+            -o android-independent/app/src/main/assets/jre21-android-arm64.tar.xz \
+            "https://github.com/AngelAuraMC/angelauramc-openjdk-build/releases/download/download_jre21/jre21-android-arm64.tar.xz"
+          echo "8d41ec401ee59f7722df60ed991f81ad146e130452804bfdd8a05d3436f7bbfe  android-independent/app/src/main/assets/jre21-android-arm64.tar.xz" | sha256sum -c -
+          echo "SkyLauncher standalone OpenJDK runtime archive verified"
       - name: Build independent app (no upstream engine checkout)
         working-directory: android-independent
         run: gradle :app:assembleDebug --no-daemon --stacktrace
