@@ -89,14 +89,14 @@ public final class SkyGraphicsActivity extends Activity {
 
         private void prepareAnimatedGlShader() {
             int vertex = compileShader(GLES30.GL_VERTEX_SHADER,
-                    "#version 300 es\\n"
-                    + "layout(location=0) in vec2 position;\\n"
+                    "#version 300 es\n"
+                    + "layout(location=0) in vec2 position;\n"
                     + "void main(){gl_Position=vec4(position,0.0,1.0);}");
             int fragment = compileShader(GLES30.GL_FRAGMENT_SHADER,
-                    "#version 300 es\\n"
-                    + "precision highp float;\\n"
-                    + "uniform float u_time;\\n"
-                    + "out vec4 outputColor;\\n"
+                    "#version 300 es\n"
+                    + "precision highp float;\n"
+                    + "uniform float u_time;\n"
+                    + "out vec4 outputColor;\n"
                     + "void main(){vec2 uv=gl_FragCoord.xy/1024.0;"
                     + "float wave=0.5+0.5*sin(u_time+uv.x*12.0);"
                     + "outputColor=vec4(0.08+wave*0.13,0.28+uv.y*0.25,"
@@ -131,7 +131,7 @@ public final class SkyGraphicsActivity extends Activity {
             final String text = String.format(Locale.ROOT,
                     "SkyLauncher independent renderer running.\n"
                     + "OpenGL ES: %s\nGPU: %s / %s\nNative JNI: %s\n\n"
-                    + "%s\\n\\n"
+                    + "%s\n\n"
                     + "Minecraft still needs Java 21 and an "
                     + "LWJGL/OpenGL compatibility layer. "
                     + "This is an Android graphics test, not Minecraft gameplay.",
