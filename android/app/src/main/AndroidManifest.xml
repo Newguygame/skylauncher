@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <queries>
+        <package android:name="com.tungsten.fcl"/>
+        <package android:name="org.angelauramc.amethyst"/>
+        <package android:name="org.angelauramc.amethyst.debug"/>
+    </queries>
+    <application
+        android:allowBackup="false"
+        android:label="SkyLauncher Android"
+        android:icon="@drawable/skylauncher_desktop"
+        android:theme="@android:style/Theme.Material.NoActionBar"
+        android:usesCleartextTraffic="false">
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"/>
+        </provider>
+        <activity android:name=".AccountActivity" android:exported="false"/>
+        <activity android:name=".ProfilesActivity" android:exported="false"/>
+        <activity android:name=".SettingsActivity" android:exported="false"/>
+        <activity android:name=".ToolsActivity" android:exported="false"/>
+        <activity android:name=".ModpacksActivity" android:exported="false"/>
+        <activity android:name=".ModBrowserActivity" android:exported="false"/>
+        <activity android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="unspecified">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
