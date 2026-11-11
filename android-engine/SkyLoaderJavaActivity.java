@@ -35,6 +35,8 @@ public final class SkyLoaderJavaActivity extends BaseActivity {
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Scoped flag understood only by SkyLauncher's native JVM lifecycle patch.
+        getIntent().putExtra("skylauncher_loader_runner", true);
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setGravity(Gravity.CENTER);
@@ -79,16 +81,15 @@ public final class SkyLoaderJavaActivity extends BaseActivity {
 
             report("Preparing Java " + java + " for " + kind + "...");
             String jreName = MultiRTUtils.getNearestJreName(java);
-            if (jreName == null) {
+            Runtime runtime = jreName == null ? null : MultiRTUtils.forceReread(jreName);
+            if (runtime == null || runtime.javaVersion < java) {
                 report("Installing required Java " + java + " runtime...");
                 NewJREUtil.tryDownloadRuntime(this, java);
                 jreName = MultiRTUtils.getNearestJreName(java);
+                runtime = jreName == null ? null : MultiRTUtils.forceReread(jreName);
             }
-            if (jreName == null)
-                throw new IllegalStateException("Java " + java + " could not be installed.");
-            Runtime runtime = MultiRTUtils.forceReread(jreName);
             if (runtime == null || runtime.javaVersion < java)
-                throw new IllegalStateException("Installed Java runtime is too old.");
+                throw new IllegalStateException("Java " + java + " could not be installed.");
             JREUtils.redirectAndPrintJRELog();
 
             List<String> args = new ArrayList<>();
