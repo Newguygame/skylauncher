@@ -28,6 +28,7 @@ public final class MainActivity extends Activity {
     private LinearLayout container;
     private TextView info;
     private Button installButton;
+    private Button loaderButton;
     private ProfileStore.Profile profile;
 
     private int dp(int x) { return Math.round(x * getResources().getDisplayMetrics().density); }
@@ -95,6 +96,10 @@ public final class MainActivity extends Activity {
         installButton = button("Install official Minecraft files");
         installButton.setOnClickListener(v -> installGame());
         add(container, installButton, 12);
+        loaderButton = button("Prepare selected modloader (own initializer)");
+        loaderButton.setEnabled(!"Vanilla".equals(profile.loader));
+        loaderButton.setOnClickListener(v -> prepareModloader());
+        add(container, loaderButton, 12);
         Button stop = button("Cancel download");
         stop.setOnClickListener(v -> cancel.set(true));
         add(container, stop, 14);
@@ -150,6 +155,7 @@ public final class MainActivity extends Activity {
     private void installGame() {
         if (!installing.compareAndSet(false, true)) return;
         installButton.setEnabled(false);
+        loaderButton.setEnabled(false);
         cancel.set(false);
         final ProfileStore.Profile selected = profile;
         info.setText("Starting official Minecraft download...");
@@ -172,10 +178,57 @@ public final class MainActivity extends Activity {
             } finally {
                 installing.set(false);
                 runOnUiThread(() -> {
-                    if (!isFinishing() && installButton != null)
+                    if (!isFinishing() && installButton != null) {
                         installButton.setEnabled(true);
+                        if (loaderButton != null)
+                            loaderButton.setEnabled(!"Vanilla".equals(profile.loader));
+                    }
                 });
             }
         }, "SkyLauncher-Independent-Minecraft-Installer").start();
     }
+
+    private void prepareModloader() {
+        if ("Vanilla".equals(profile.loader)) {
+            info.setText("Vanilla Minecraft has no separate modloader.");
+            return;
+        }
+        if (!installing.compareAndSet(false, true)) return;
+        cancel.set(false);
+        installButton.setEnabled(false);
+        loaderButton.setEnabled(false);
+        final ProfileStore.Profile selected = profile;
+        info.setText("Checking official " + selected.loader + " metadata...");
+        new Thread(() -> {
+            try {
+                SkyModloaderInitializer.Result result =
+                        SkyModloaderInitializer.prepare(this, selected, cancel,
+                                message -> runOnUiThread(() -> {
+                                    if (!isFinishing() && info != null)
+                                        info.setText(message);
+                                }));
+                runOnUiThread(() -> {
+                    if (!isFinishing()) info.setText(result.kind + " "
+                            + result.loaderVersion + " prepared for " + selected.version
+                            + ". Minecraft gameplay remains disabled until the "
+                            + "independent Android Java and graphics runtime is built.");
+                });
+            } catch (Exception failure) {
+                runOnUiThread(() -> {
+                    if (!isFinishing()) info.setText("Modloader initializer failed: "
+                            + (failure.getMessage() == null
+                            ? failure.getClass().getSimpleName() : failure.getMessage()));
+                });
+            } finally {
+                installing.set(false);
+                runOnUiThread(() -> {
+                    if (!isFinishing()) {
+                        installButton.setEnabled(true);
+                        loaderButton.setEnabled(!"Vanilla".equals(profile.loader));
+                    }
+                });
+            }
+        }, "SkyLauncher-Independent-Modloader-Initializer").start();
+    }
+
 }
