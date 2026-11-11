@@ -19,7 +19,7 @@ jobs:
           set -euo pipefail
           curl -fL --retry 2 --max-time 180 \
             -o /tmp/skylauncher-java21.tar.xz \
-            "https://github.com/AngelAuraMC/angelauramc-openjdk-build/releases/download/release/jre21-android-arm64.tar.xz"
+            "https://github.com/AngelAuraMC/angelauramc-openjdk-build/releases/download/download_jre21/jre21-android-arm64.tar.xz"
           echo "8d41ec401ee59f7722df60ed991f81ad146e130452804bfdd8a05d3436f7bbfe  /tmp/skylauncher-java21.tar.xz" | sha256sum -c -
           echo "ARCHIVE_SIZE=$(stat -c%s /tmp/skylauncher-java21.tar.xz)"
           tar -tJf /tmp/skylauncher-java21.tar.xz | head -n 50 || true
