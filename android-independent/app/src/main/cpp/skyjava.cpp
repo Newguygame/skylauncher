@@ -130,7 +130,7 @@ namespace {
             options[i].optionString = settings[i].data();
 
         JavaVMInitArgs vmArgs{};
-        vmArgs.version = JNI_VERSION_1_8;
+        vmArgs.version = JNI_VERSION_1_6; // Android NDK JNI header exposes 1.6.
         vmArgs.nOptions = static_cast<jint>(options.size());
         vmArgs.options = options.data();
         vmArgs.ignoreUnrecognized = JNI_FALSE;
