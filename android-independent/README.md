@@ -15,6 +15,11 @@ The only platform dependencies at this stage are Android SDK / Java platform API
 - Direct Mojang version manifest, game client, library and asset downloads.
 - Official SHA-1 integrity checks, path safety checks, HTTPS allowlist,
   download size limits, cancellation and atomic file writes.
+- Native SkyLauncher modloader initializer using official Fabric, Quilt, Forge and
+  NeoForge sources; Fabric/Quilt descriptors are written by SkyLauncher.
+- Official Forge/NeoForge installer JARs are checksum-verified and staged.
+- The development test APK uses a different application ID, so it can be installed
+  alongside the existing Android launcher without touching its user data.
 - Independent Android CI. CI artifacts are for chat testing only.
 
 ## Not implemented — game is NOT playable yet
@@ -24,7 +29,9 @@ The only platform dependencies at this stage are Android SDK / Java platform API
 - LWJGL/GLFW/OpenGL compatibility for Android graphics and input.
 - Microsoft/Minecraft authentication and token handling.
 - Library classpath/Java arguments, asset preparation for actual launch.
-- Forge / NeoForge official installer execution, and Fabric/Quilt launch.
+- Forge / NeoForge official installer execution (official installer JARs are
+  prepared, but not executed without the independent Java runner).
+- Fabric / Quilt classpath resolution and actual game launch.
 - Minecraft splash/loading, sound and touchscreen controls.
 
 Simply embedding a desktop Minecraft JAR in an Android APK does not make it
