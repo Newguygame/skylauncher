@@ -29,3 +29,8 @@ android {
         release { minifyEnabled false }
     }
 }
+
+dependencies {
+    implementation 'org.tukaani:xz:1.12'
+}
+
