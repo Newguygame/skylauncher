@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(skylauncher_independent_engine LANGUAGES CXX)
+add_library(skyengine SHARED skyengine.cpp)
+target_compile_features(skyengine PRIVATE cxx_std_17)
+target_link_libraries(skyengine GLESv3 android log)
