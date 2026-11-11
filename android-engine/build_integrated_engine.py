@@ -127,6 +127,10 @@ def overlay_java(engine, sky):
                     target_dir / "SkyEngineProfileBridge.java")
     shutil.copyfile(sky / "android-engine/SkyEngineLoaderInstaller.java",
                     target_dir / "SkyEngineLoaderInstaller.java")
+    shutil.copyfile(sky / "android-engine/SkyLoaderInitializer.java",
+                    target_dir / "SkyLoaderInitializer.java")
+    shutil.copyfile(sky / "android-engine/SkyLoaderJavaActivity.java",
+                    target_dir / "SkyLoaderJavaActivity.java")
     shutil.copyfile(sky / "android-engine/SkyEngineClientArtifacts.java",
                     target_dir / "SkyEngineClientArtifacts.java")
     shutil.copyfile(sky / "android-engine/SkyPackInstaller.java",
@@ -160,7 +164,7 @@ def overlay_manifest(engine, sky):
 '''
     for name in ("ProfilesActivity", "SettingsActivity", "ToolsActivity",
                  "ModpacksActivity", "ModBrowserActivity", "AccountActivity",
-                 "SkyEngineLoaderInstaller"):
+                 "SkyEngineLoaderInstaller", "SkyLoaderJavaActivity"):
         extra += ('        <activity android:name="' + PKG + "." + name +
                   '" android:exported="false"/>\n')
     extra += '''        <provider android:name="androidx.core.content.FileProvider"
