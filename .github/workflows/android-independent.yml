@@ -30,8 +30,10 @@ jobs:
             echo "::error::Android SDK command line tools missing"
             exit 1
           fi
-          yes | "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" || true
+          yes | "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "ndk;27.3.13750724" "cmake;3.22.1" || true
           test -s "$ANDROID_HOME/platforms/android-35/android.jar"
+          test -d "$ANDROID_HOME/ndk/27.3.13750724"
+          test -d "$ANDROID_HOME/cmake/3.22.1"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10.2'
