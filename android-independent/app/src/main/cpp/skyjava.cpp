@@ -83,6 +83,22 @@ namespace {
         if (ramMb < 256 || ramMb > 8192)
             return "INVALID_RAM: heap memory must be 256-8192 MB.";
 
+        // Copy everything out of ART's JNI context before HotSpot is created.
+        // Avoid calling ART JNI on the HotSpot-attached thread.
+        std::vector<std::string> launchArguments;
+        if (arguments == nullptr)
+            return "INVALID_LAUNCH_PLAN: game argument array missing.";
+        const jsize argumentCount = androidEnv->GetArrayLength(arguments);
+        if (argumentCount > 512)
+            return "INVALID_LAUNCH_PLAN: too many game arguments.";
+        launchArguments.reserve(static_cast<size_t>(argumentCount));
+        for (jsize i = 0; i < argumentCount; ++i) {
+            auto element = static_cast<jstring>(
+                    androidEnv->GetObjectArrayElement(arguments, i));
+            launchArguments.push_back(jstringToString(androidEnv, element));
+            if (element) androidEnv->DeleteLocalRef(element);
+        }
+
         // Android's ART JVM and HotSpot are distinct runtimes; the result is
         // contained in the :minecraft app process, never the UI process.
         // Android linker namespaces / native ABI dependencies can still
@@ -154,16 +170,13 @@ namespace {
         if (hasPendingException(gameEnv, exception) || main == nullptr)
             return "MAIN_METHOD_FAILURE: " + exception;
 
-        const jsize length = androidEnv->GetArrayLength(arguments);
         jclass javaString = gameEnv->FindClass("java/lang/String");
         if (hasPendingException(gameEnv, exception)) return exception;
-        jobjectArray args = gameEnv->NewObjectArray(length, javaString, nullptr);
+        jobjectArray args = gameEnv->NewObjectArray(
+                static_cast<jsize>(launchArguments.size()), javaString, nullptr);
         if (hasPendingException(gameEnv, exception)) return exception;
-        for (jsize i = 0; i < length; ++i) {
-            auto item = static_cast<jstring>(androidEnv->GetObjectArrayElement(arguments, i));
-            std::string value = jstringToString(androidEnv, item);
-            if (item) androidEnv->DeleteLocalRef(item);
-            jstring converted = gameEnv->NewStringUTF(value.c_str());
+        for (size_t i = 0; i < launchArguments.size(); ++i) {
+            jstring converted = gameEnv->NewStringUTF(launchArguments[i].c_str());
             if (hasPendingException(gameEnv, exception)) return exception;
             gameEnv->SetObjectArrayElement(args, i, converted);
             gameEnv->DeleteLocalRef(converted);
