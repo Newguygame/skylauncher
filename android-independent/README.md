@@ -25,7 +25,10 @@ The only platform dependencies at this stage are Android SDK / Java platform API
 ## Not implemented — game is NOT playable yet
 
 - Android-compatible Java 21 runtime installation/packaging.
-- JNI JVM startup and lifecycle.
+- An Android OpenJDK 21 runtime has not yet been built and bundled.
+- A native JNI JVM startup entrypoint is implemented but untested on device.
+  The launcher never calls it without a complete Android-native runtime.
+  A dedicated Android :minecraft process isolates game VM failures.
 - LWJGL/GLFW/OpenGL compatibility for Android graphics and input.
 - Microsoft/Minecraft authentication and token handling.
 - Library classpath/Java arguments, asset preparation for actual launch.
