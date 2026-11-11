@@ -34,6 +34,7 @@ public final class MainActivity extends Activity {
     private TextView info;
     private Button installButton;
     private Button loaderButton;
+    private Button runtimeButton;
     private static final int PICK_SHADER_ZIP = 707;
     private final AtomicBoolean shaderBusy = new AtomicBoolean(false);
     private ProfileStore.Profile profile;
@@ -107,11 +108,22 @@ public final class MainActivity extends Activity {
         loaderButton.setEnabled(!"Vanilla".equals(profile.loader));
         loaderButton.setOnClickListener(v -> prepareModloader());
         add(container, loaderButton, 12);
+        boolean jreInstalled = SkyJavaRuntimeInstaller.ready(this);
+        runtimeButton = button(jreInstalled
+                ? "Android OpenJDK 21 installed"
+                : "Install Android OpenJDK 21 runtime");
+        runtimeButton.setEnabled(!jreInstalled);
+        runtimeButton.setOnClickListener(v -> installJavaRuntime());
+        add(container, runtimeButton, 12);
         Button stop = button("Cancel download");
         stop.setOnClickListener(v -> cancel.set(true));
         add(container, stop, 14);
-        info = label("Ready. The independent Java / graphics runtime is "
-                + "under development.", 13, 0xffb8ccd9);
+        info = label(SkyJavaRuntimeInstaller.ready(this)
+                ? "OpenJDK 21 files installed. The native LWJGL/OpenGL renderer "
+                  + "is not integrated yet."
+                : "Install the bundled Java 21 runtime before attempting to "
+                  + "start Minecraft. Rendering is still experimental.",
+                13, 0xffb8ccd9);
         add(container, info, 25);
 
         add(container, label("Microsoft / Minecraft account", 21, Color.WHITE), 10);
@@ -201,6 +213,49 @@ public final class MainActivity extends Activity {
                     ProfileStore.save(this, profiles);
                     render();
                 }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void installJavaRuntime() {
+        if (!installing.compareAndSet(false, true)) {
+            Toast.makeText(this, "Another operation is running.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        cancel.set(false);
+        runtimeButton.setEnabled(false);
+        installButton.setEnabled(false);
+        loaderButton.setEnabled(false);
+        info.setText("Verifying packaged OpenJDK 21 runtime...");
+        new Thread(() -> {
+            try {
+                SkyJavaRuntimeInstaller.install(this, cancel, progress ->
+                        runOnUiThread(() -> {
+                            if (!isFinishing() && info != null)
+                                info.setText(progress);
+                        }));
+                runOnUiThread(() -> {
+                    if (!isFinishing()) info.setText(
+                            "OpenJDK 21 runtime installed. Native graphics and "
+                                    + "Minecraft JVM startup still require testing.");
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (!isFinishing()) info.setText("OpenJDK installation failed: "
+                            + (error.getMessage() == null
+                            ? error.getClass().getSimpleName() : error.getMessage()));
+                });
+            } finally {
+                installing.set(false);
+                runOnUiThread(() -> {
+                    if (!isFinishing()) {
+                        runtimeButton.setEnabled(!SkyJavaRuntimeInstaller.ready(this));
+                        if (SkyJavaRuntimeInstaller.ready(this))
+                            runtimeButton.setText("Android OpenJDK 21 installed");
+                        installButton.setEnabled(true);
+                        loaderButton.setEnabled(!"Vanilla".equals(profile.loader));
+                    }
+                });
+            }
+        }, "SkyLauncher-Standalone-OpenJDK21-Setup").start();
     }
 
     private void installGame() {
@@ -344,7 +399,8 @@ public final class MainActivity extends Activity {
                         })
                         .setNegativeButton("Close", null)
                         .show();
-                info.setText("Microsoft device sign-in pending. Complete it in browser.");
+                info.setText("Microsoft verification code: " + code
+                        + "\nGo to: " + uri + "\nWaiting for Microsoft approval...");
             }
             @Override public void progress(String message) {
                 if (!isFinishing()) info.setText(message);
