@@ -1,0 +1,45 @@
+name: Check SkyLauncher Microsoft device-code registration
+
+on:
+  push:
+    branches: [feature/android-independent-engine]
+    paths: ['.github/workflows/check-microsoft-auth.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-public-client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify Microsoft device authorization response (no login or secret)
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import urllib.parse, urllib.request, urllib.error, json, re, sys
+          url = 'https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode'
+          request = urllib.request.Request(url, data=urllib.parse.urlencode({
+              'client_id':'54473e32-df8f-42e9-a649-9419b0dab9d3',
+              'scope':'XboxLive.signin offline_access openid profile',
+          }).encode('utf-8'), headers={'Content-Type':'application/x-www-form-urlencoded'})
+          try:
+              with urllib.request.urlopen(request, timeout=15) as result:
+                  code = result.status
+                  response = json.load(result)
+          except urllib.error.HTTPError as failure:
+              code = failure.code
+              response = json.loads(failure.read(100000).decode('utf-8','replace'))
+          except Exception as failure:
+              print('Network error:',type(failure).__name__)
+              raise
+          print('Microsoft HTTP code:',code)
+          print('Microsoft error type:',response.get('error','none'))
+          description = response.get('error_description','')
+          identifiers = re.findall(r'AADSTS[0-9]{5,8}',description)
+          print('AADSTS codes:', sorted(set(identifiers)))
+          print('Device flow enabled:', bool(response.get('verification_uri')) and bool(response.get('user_code')))
+          # Never emit device_code, access tokens, user_code, or full response.
+          if code != 200: sys.exit(1)
+          PY
