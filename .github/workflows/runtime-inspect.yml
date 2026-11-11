@@ -25,4 +25,10 @@ jobs:
           tar -tJf /tmp/skylauncher-java21.tar.xz | head -n 50 || true
           echo "JVM_FILES:"
           tar -tJf /tmp/skylauncher-java21.tar.xz | grep -E 'libjvm.so|/modules$|/libjava.so|/libjli.so|/release$' | head -n 35 || true
+          echo "RUNTIME_FILE_TYPES:"
+          tar -tvJf /tmp/skylauncher-java21.tar.xz | head -n 35 || true
+          echo "SYMLINKS:"
+          tar -tvJf /tmp/skylauncher-java21.tar.xz | grep '^l' | head -n 35 || true
+          echo "COUNT:"
+          tar -tJf /tmp/skylauncher-java21.tar.xz | wc -l
           echo "SOURCE_LISTED: standalone OpenJDK component, not a Minecraft launcher"
