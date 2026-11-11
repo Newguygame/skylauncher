@@ -32,6 +32,7 @@ public final class SkyGraphicsActivity extends Activity {
     }
 
     private static native String nativeDeviceInfo();
+    private static native String nativeVulkanReport();
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -76,6 +77,24 @@ public final class SkyGraphicsActivity extends Activity {
                     version, vendor, renderer,
                     NATIVE_AVAILABLE ? nativeDeviceInfo() : "native library not loaded");
             runOnUiThread(() -> status.setText(text));
+            if (NATIVE_AVAILABLE) {
+                new Thread(() -> {
+                    final String details;
+                    try {
+                        details = nativeVulkanReport();
+                    } catch (Throwable error) {
+                        final String reason = error.getMessage();
+                        runOnUiThread(() -> {
+                            if (!isFinishing()) status.setText(text +
+                                    "\n\nVulkan probe error: " + reason);
+                        });
+                        return;
+                    }
+                    runOnUiThread(() -> {
+                        if (!isFinishing()) status.setText(text + "\n\n" + details);
+                    });
+                }, "SkyLauncher-Vulkan-Capability-Probe").start();
+            }
         }
         @Override public void onSurfaceChanged(GL10 ignored, int width, int height) {
             GLES30.glViewport(0, 0, width, height);
