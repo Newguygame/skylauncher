@@ -2,6 +2,10 @@ package org.fathomstudios.skylauncher.android;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
+import android.net.Uri;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
@@ -30,6 +34,8 @@ public final class MainActivity extends Activity {
     private TextView info;
     private Button installButton;
     private Button loaderButton;
+    private static final int PICK_SHADER_ZIP = 707;
+    private final AtomicBoolean shaderBusy = new AtomicBoolean(false);
     private ProfileStore.Profile profile;
 
     private int dp(int x) { return Math.round(x * getResources().getDisplayMetrics().density); }
@@ -107,6 +113,38 @@ public final class MainActivity extends Activity {
         info = label("Ready. The independent Java / graphics runtime is "
                 + "under development.", 13, 0xffb8ccd9);
         add(container, info, 25);
+
+        add(container, label("Microsoft / Minecraft account", 21, Color.WHITE), 10);
+        String loggedIn = MicrosoftLogin.username(this);
+        add(container, label(loggedIn.isEmpty()
+                ? "Not signed in. A genuine Minecraft Java account is required."
+                : "Signed in as: " + loggedIn,
+                14, 0xffc2d0df), 10);
+        Button login = button("Sign in with Microsoft");
+        login.setOnClickListener(v -> beginMicrosoftLogin());
+        add(container, login, 10);
+        Button signout = button("Sign out");
+        signout.setEnabled(!loggedIn.isEmpty());
+        signout.setOnClickListener(v -> {
+            MicrosoftLogin.signOut(this);
+            render();
+        });
+        add(container, signout, 23);
+
+        add(container, label("Shaders (experimental)", 21, Color.WHITE), 10);
+        add(container, label("Import a shader pack ZIP into this Minecraft profile. "
+                + "Actual Iris shader rendering requires the independent "
+                + "OpenGL-on-Vulkan backend and a compatible shader mod.",
+                14, 0xffc2d0df), 12);
+        Button shaders = button("Import shader pack ZIP");
+        shaders.setOnClickListener(v -> selectShaderZip());
+        add(container, shaders, 12);
+        Button listShaders = button("Show installed shader packs");
+        listShaders.setOnClickListener(v -> showShaderPacks());
+        add(container, listShaders, 12);
+        Button backend = button("Choose target graphics backend");
+        backend.setOnClickListener(v -> chooseGraphicsBackend());
+        add(container, backend, 23);
 
         add(container, label("Minecraft launch", 21, Color.WHITE), 8);
         add(container, label("Test SkyLauncher's own graphics interface and inspect "
@@ -272,6 +310,134 @@ public final class MainActivity extends Activity {
                 installing.set(false);
             }
         }, "SkyLauncher-Launch-Preflight").start();
+    }
+
+
+    private void beginMicrosoftLogin() {
+        if (installing.get()) {
+            info.setText("Finish the current download before account sign-in.");
+            return;
+        }
+        info.setText("Contacting Microsoft for a Minecraft device sign-in code...");
+        MicrosoftLogin.login(this, new MicrosoftLogin.Listener() {
+            @Override public void deviceCode(String code, String uri) {
+                if (isFinishing()) return;
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Sign in with Microsoft")
+                        .setMessage("Open " + uri + " and enter code:\n\n" + code
+                                + "\n\nOnly sign in on the official Microsoft website. "
+                                + "Return here after authorizing.")
+                        .setPositiveButton("Open Microsoft", (dialog, which) -> {
+                            Intent browser = new Intent(Intent.ACTION_VIEW, Uri.parse(uri));
+                            startActivity(browser);
+                        })
+                        .setNeutralButton("Copy code", (dialog, which) -> {
+                            ClipboardManager clipboard = (ClipboardManager)
+                                    getSystemService(Context.CLIPBOARD_SERVICE);
+                            if (clipboard != null)
+                                clipboard.setPrimaryClip(ClipData.newPlainText(
+                                        "Microsoft device code", code));
+                        })
+                        .setNegativeButton("Close", null)
+                        .show();
+                info.setText("Microsoft device sign-in pending. Complete it in browser.");
+            }
+            @Override public void progress(String message) {
+                if (!isFinishing()) info.setText(message);
+            }
+            @Override public void success(String username, String uuid) {
+                if (!isFinishing()) {
+                    render();
+                    info.setText("Microsoft Minecraft account verified: " + username);
+                }
+            }
+            @Override public void error(String message) {
+                if (!isFinishing()) info.setText("Microsoft sign-in: " + message);
+            }
+        });
+    }
+
+    private void selectShaderZip() {
+        if (installing.get() || shaderBusy.get()) {
+            info.setText("Complete the current action before importing a shader pack.");
+            return;
+        }
+        Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        picker.addCategory(Intent.CATEGORY_OPENABLE);
+        picker.setType("application/zip");
+        picker.putExtra(Intent.EXTRA_MIME_TYPES,
+                new String[]{"application/zip", "application/x-zip-compressed",
+                        "application/octet-stream"});
+        try {
+            startActivityForResult(picker, PICK_SHADER_ZIP);
+        } catch (android.content.ActivityNotFoundException error) {
+            info.setText("No Android ZIP file picker is available.");
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    @Override protected void onActivityResult(int requestCode, int resultCode,
+                                              Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != PICK_SHADER_ZIP || resultCode != RESULT_OK
+                || data == null || data.getData() == null) return;
+        if (!shaderBusy.compareAndSet(false, true)) return;
+        final ProfileStore.Profile selected = profile;
+        final Uri zip = data.getData();
+        cancel.set(false);
+        info.setText("Checking shaderpack ZIP...");
+        new Thread(() -> {
+            try {
+                SkyShaderPacks.ImportResult installed =
+                        SkyShaderPacks.importZip(this, selected, zip, cancel,
+                                status -> runOnUiThread(() -> {
+                                    if (!isFinishing()) info.setText(status);
+                                }));
+                runOnUiThread(() -> {
+                    if (!isFinishing()) info.setText(installed.summary());
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    if (!isFinishing()) info.setText("Shaderpack import failed: "
+                            + (error.getMessage() == null ? "Unknown problem"
+                            : error.getMessage()));
+                });
+            } finally {
+                shaderBusy.set(false);
+            }
+        }, "SkyLauncher-Shaderpack-Importer").start();
+    }
+
+    private void showShaderPacks() {
+        try {
+            String[] packs = SkyShaderPacks.installed(this, profile);
+            String message = packs.length == 0 ? "No shader packs imported yet."
+                    : String.join("\n", packs);
+            new AlertDialog.Builder(this).setTitle(
+                    "Shaderpacks for " + profile.name)
+                    .setMessage(message)
+                    .setPositiveButton("OK", null)
+                    .show();
+        } catch (Exception error) {
+            info.setText("Cannot read shaderpacks: " + error.getMessage());
+        }
+    }
+
+    private void chooseGraphicsBackend() {
+        final String[] choices = {"Vulkan + Zink (target; not integrated)",
+                "Android OpenGL ES (diagnostics only)"};
+        String old = getPreferences(MODE_PRIVATE).getString("graphics_backend",
+                "vulkan_zink");
+        int selected = old.equals("android_gles") ? 1 : 0;
+        new AlertDialog.Builder(this)
+                .setTitle("Future Minecraft graphics backend")
+                .setSingleChoiceItems(choices, selected, (dialog, index) -> {
+                    getPreferences(MODE_PRIVATE).edit().putString("graphics_backend",
+                            index == 0 ? "vulkan_zink" : "android_gles").apply();
+                    dialog.dismiss();
+                    info.setText("Target graphics backend saved. This does not "
+                            + "enable game rendering yet.");
+                }).setNegativeButton("Cancel", null).show();
     }
 
 }
