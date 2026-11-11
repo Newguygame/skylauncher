@@ -88,17 +88,36 @@ final class SkyLaunchPlan {
         JSONObject selected = base;
         if (!"Vanilla".equals(profile.loader)) {
             File loaderMeta = new File(gameDir, "skylauncher-loader.json");
-            JSONObject loaderRecord = parseJson(loaderMeta, missing, "Modloader state");
-            String versionId = loaderRecord.optString("versionId", "");
-            if (!versionId.matches("[A-Za-z0-9._+-]{1,140}")) {
-                missing.add("Select and initialize the modloader first.");
+            if (!loaderMeta.isFile()) {
+                missing.add("Prepare the selected " + profile.loader
+                        + " modloader first (tap Prepare selected modloader).");
             } else {
-                requested = versionId;
-                File desc = secureFile(versionsRoot, versionId + "/" + versionId + ".json");
-                selected = parseJson(desc, missing, "Modloader version descriptor");
-            }
-            if (loaderRecord.optBoolean("needsNativeJvm", false)) {
-                missing.add("Forge / NeoForge installer must run using independent Java 21.");
+                JSONObject loaderRecord = parseJson(loaderMeta, missing, "Modloader state");
+                String versionId = loaderRecord.optString("versionId", "");
+                if (!profile.loader.equals(loaderRecord.optString("loader"))) {
+                    missing.add("Modloader setup belongs to a different loader. Prepare "
+                            + profile.loader + " again.");
+                } else if (!profile.version.equals(loaderRecord.optString("minecraft"))) {
+                    missing.add("Modloader setup belongs to a different Minecraft version.");
+                } else if (!versionId.matches("[A-Za-z0-9._+-]{1,140}")) {
+                    missing.add("Modloader version ID is invalid; reinitialize the modloader.");
+                } else {
+                    requested = versionId;
+                    if (loaderRecord.optBoolean("needsNativeJvm", false)) {
+                        // Forge and NeoForge only create their version
+                        // descriptors AFTER the official installer executes.
+                        // Reporting the missing descriptor as corrupt here was
+                        // misleading; the independent Java 21 runner is pending.
+                        missing.add(profile.loader + " installer is downloaded, but has "
+                                + "not been executed. Android OpenJDK 21 and the "
+                                + "independent Forge/NeoForge installer runner are required.");
+                    } else {
+                        File desc = secureFile(versionsRoot,
+                                versionId + "/" + versionId + ".json");
+                        selected = parseJson(desc, missing,
+                                "Fabric/Quilt modloader version descriptor");
+                    }
+                }
             }
         }
 
