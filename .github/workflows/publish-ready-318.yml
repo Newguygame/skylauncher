@@ -1,0 +1,46 @@
+name: Publish ready SkyLauncher 3.1.8 artifacts
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-ready-318.yml'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish-ready:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download verified release artifacts from cross-platform build
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          for artifact in \
+            SkyLauncher-Offline-Windows \
+            SkyLauncher-Offline-Linux \
+            SkyLauncher-Offline-macOS-Apple-Silicon \
+            SkyLauncher-Portable-Linux-x86_64 \
+            SkyLauncher-Portable-Linux-arm64; do
+            gh run download 43626482718 --name "$artifact" --dir release-assets
+          done
+          cp installers/macOS/SkyLauncher-Universal-macOS-Installer.zip release-assets/
+          cp installers/linux/SkyLauncher-Universal-Linux-Installer.zip release-assets/
+          test -s release-assets/SkyLauncher-3.1.8.exe
+          test -s release-assets/SkyLauncher-3.1.8-arm64.dmg
+          test -s release-assets/skylauncher_3.1.8_amd64.deb
+          ls -lh release-assets/
+      - name: Attach finished packages to official v3.1.8 release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view v3.1.8
+          gh release upload v3.1.8 release-assets/* --clobber
