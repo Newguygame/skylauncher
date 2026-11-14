@@ -35,7 +35,7 @@ import java.security.cert.Certificate;
 
 
 public class SkyLauncher {
-    static final String VERSION = "3.1.7";
+    static final String VERSION = "3.1.8";
     static final Path HOME = Paths.get(System.getProperty("user.home"));
     static final Path BASE = HOME.resolve(".ghmodlauncher");
     static final Path CONFIG = BASE.resolve("config.json");
@@ -3616,13 +3616,13 @@ public class SkyLauncher {
         check(shellQuote("It's sky").equals("'It'\\''s sky'"), "shell escaping");
         check(desktopQuote("a b").equals("\"a b\""), "desktop escaping");
         Map<String,Object> fakeRelease = new LinkedHashMap<>();
-        fakeRelease.put("tag_name", "v3.1.7");
+        fakeRelease.put("tag_name", "v3.1.8");
         String exampleDigest = "sha256:" + "a".repeat(64);
         fakeRelease.put("assets", List.of(
-            Map.of("name","SkyLauncher.jar", "browser_download_url","https://github.com/Newguygame/skylauncher/releases/download/v3.1.7/SkyLauncher.jar", "digest",exampleDigest),
-            Map.of("name","SkyLauncher-3.1.7.exe", "browser_download_url","https://github.com/Newguygame/skylauncher/releases/download/v3.1.7/SkyLauncher-3.1.7.exe", "digest",exampleDigest),
-            Map.of("name","SkyLauncher-3.1.7-arm64.dmg", "browser_download_url","https://github.com/Newguygame/skylauncher/releases/download/v3.1.7/SkyLauncher-3.1.7-arm64.dmg", "digest",exampleDigest),
-            Map.of("name","skylauncher_3.1.7_amd64.deb", "browser_download_url","https://github.com/Newguygame/skylauncher/releases/download/v3.1.7/skylauncher_3.1.7_amd64.deb", "digest",exampleDigest)));
+            Map.of("name","SkyLauncher.jar", "browser_download_url","https://github.com/Newguygame/skylauncher/releases/download/v3.1.8/SkyLauncher.jar", "digest",exampleDigest),
+            Map.of("name","SkyLauncher-3.1.8.exe", "browser_download_url","https://github.com/Newguygame/skylauncher/releases/download/v3.1.8/SkyLauncher-3.1.8.exe", "digest",exampleDigest),
+            Map.of("name","SkyLauncher-3.1.8-arm64.dmg", "browser_download_url","https://github.com/Newguygame/skylauncher/releases/download/v3.1.8/SkyLauncher-3.1.8-arm64.dmg", "digest",exampleDigest),
+            Map.of("name","skylauncher_3.1.8_amd64.deb", "browser_download_url","https://github.com/Newguygame/skylauncher/releases/download/v3.1.8/skylauncher_3.1.8_amd64.deb", "digest",exampleDigest)));
         check(selectLauncherAsset(fakeRelease,"portable-jar","windows","x86_64").name.equals("SkyLauncher.jar"), "portable JAR updater asset");
         check(selectLauncherAsset(fakeRelease,"win-installer","windows","x86_64").name.endsWith(".exe"), "Windows installer update asset");
         check(selectLauncherAsset(fakeRelease,"mac-app","osx","arm64").name.endsWith("-arm64.dmg"), "Apple Silicon updater asset");
@@ -3630,8 +3630,9 @@ public class SkyLauncher {
         check(selectLauncherAsset(fakeRelease,"mac-app","osx","x86_64")==null, "missing platform build does not trigger update");
         fakeRelease.put("tag_name", "v3.1.6");
         check(selectLauncherAsset(fakeRelease,"portable-jar","windows","x86_64")==null, "wrong release asset rejected");
-        fakeRelease.put("tag_name", "v3.1.7");
-        check(compareReleaseVersions("v3.1.7", "3.1.3")>0, "updater version comparison");
+        fakeRelease.put("tag_name", "v3.1.8");
+        check(compareReleaseVersions("v3.1.8", "3.1.7")>0, "new release is newer than previous stable");
+        check(compareReleaseVersions("v3.1.8", "3.1.3")>0, "updater version comparison");
 
         setShade("Black", "#29AABB", "#202833", "#FFFFFF");
         check(BG.equals(new Color(0x202833)) && FG.equals(Color.WHITE) && ACCENT.equals(new Color(0x29AABB)), "custom theme colors");
