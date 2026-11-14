@@ -1178,6 +1178,131 @@ public class SkyLauncher {
         } finally { deleteTree(work); }
     }
 
+    // ============================================================ local mod imports
+    static final long LOCAL_JAR_MAX_BYTES = 256L * 1024 * 1024;
+    static final long LOCAL_IMPORT_MAX_BYTES = 1024L * 1024 * 1024;
+    static final int LOCAL_ZIP_MAX_ENTRIES = 4096;
+    static final int LOCAL_ZIP_MAX_JARS = 1000;
+
+    static final class LocalImportResult {
+        int imported, skipped, rejected;
+        long bytesRead;
+        String summary() {
+            return "Imported " + imported + " mod(s); " + skipped + " skipped; " + rejected + " rejected.";
+        }
+    }
+
+    /** Copy only mod jars into a profile's mods folder. Never extract archive paths. */
+    static void importLocalJar(InputStream input, String entryName, Path modsDir, String loader,
+                               boolean overwrite, Set<String> tracked, Set<String> seen,
+                               LocalImportResult result, Log log) throws IOException {
+        String normalized = entryName.replace('\\', '/');
+        if (normalized.startsWith("/") || normalized.matches("(?i)^[a-z]:.*")
+                || Arrays.asList(normalized.split("/")).contains("..")) {
+            result.rejected++; log.log("Unsafe archive path rejected: " + entryName); return;
+        }
+        String filename = normalized.substring(normalized.lastIndexOf('/') + 1);
+        if (!filename.toLowerCase(Locale.ROOT).endsWith(".jar") || filename.isBlank()) {
+            result.rejected++; log.log("Not a jar: " + entryName); return;
+        }
+        String key = filename.toLowerCase(Locale.ROOT);
+        if (!seen.add(key)) {
+            result.skipped++; log.log("Duplicate jar filename skipped: " + filename); return;
+        }
+        Path destination = modsDir.resolve(filename);
+        if (tracked.contains(key) || (Files.exists(destination) && !overwrite)) {
+            result.skipped++; log.log("Already installed (or managed by mod updater): " + filename); return;
+        }
+
+        Path staging = Files.createTempFile(modsDir, ".skylauncher-import-", ".jar");
+        try {
+            long size = 0;
+            try (OutputStream out = Files.newOutputStream(staging)) {
+                byte[] chunk = new byte[64 * 1024];
+                int count;
+                while ((count = input.read(chunk)) != -1) {
+                    size += count;
+                    result.bytesRead += count;
+                    if (size > LOCAL_JAR_MAX_BYTES || result.bytesRead > LOCAL_IMPORT_MAX_BYTES)
+                        throw new IOException("Import limit exceeded (256 MiB per jar, 1 GiB per batch)");
+                    out.write(chunk, 0, count);
+                }
+            }
+            // Both a real zip/jar and a Minecraft mod descriptor are required.
+            try (ZipFile jar = new ZipFile(staging.toFile())) {
+                if (jar.getEntry("fabric.mod.json") == null
+                        && jar.getEntry("quilt.mod.json") == null
+                        && jar.getEntry("META-INF/mods.toml") == null
+                        && jar.getEntry("META-INF/neoforge.mods.toml") == null) {
+                    result.rejected++; log.log("No Minecraft mod metadata: " + filename); return;
+                }
+            }
+            List<Object> loaders = l(readMeta(staging).get("loaders"));
+            if (!loaders.isEmpty() && !loaders.contains(loader)
+                    && !(loader.equals("quilt") && loaders.contains("fabric"))) {
+                result.rejected++; log.log("Wrong mod loader for " + filename + ": " + loaders + " (profile: " + loader + ")"); return;
+            }
+            if (overwrite) Files.move(staging, destination, StandardCopyOption.REPLACE_EXISTING);
+            else Files.move(staging, destination);
+            result.imported++;
+            log.log("Imported local mod: " + filename);
+        } finally {
+            Files.deleteIfExists(staging);
+        }
+    }
+
+    static LocalImportResult importLocalMods(List<Path> paths, Map<String, Object> instance,
+                                             boolean overwrite, Log log) throws IOException {
+        Path modsDir = Paths.get(s(instance.get("mods_dir")));
+        Files.createDirectories(modsDir);
+        String loader = s(instance.get("loader"));
+        Set<String> tracked = new HashSet<>(), seen = new HashSet<>();
+        for (Object item : m(instance.get("mods")).values()) {
+            String file = s(m(item).get("file"));
+            if (!file.isBlank()) tracked.add(file.toLowerCase(Locale.ROOT));
+        }
+        LocalImportResult result = new LocalImportResult();
+        for (Path path : paths) {
+            String ext = path.getFileName().toString().toLowerCase(Locale.ROOT);
+            try {
+                if (!Files.isRegularFile(path)) throw new IOException("Not a regular file");
+                if (ext.endsWith(".jar")) {
+                    if (Files.size(path) > LOCAL_JAR_MAX_BYTES) throw new IOException("Jar exceeds 256 MiB");
+                    try (InputStream input = Files.newInputStream(path)) {
+                        importLocalJar(input, path.getFileName().toString(), modsDir, loader,
+                                overwrite, tracked, seen, result, log);
+                    }
+                } else if (ext.endsWith(".zip")) {
+                    try (ZipFile zip = new ZipFile(path.toFile())) {
+                        if (zip.size() > LOCAL_ZIP_MAX_ENTRIES) throw new IOException("Too many ZIP entries");
+                        int jarCount = 0;
+                        var entries = zip.entries();
+                        while (entries.hasMoreElements()) {
+                            ZipEntry entry = entries.nextElement();
+                            if (entry.isDirectory() || !entry.getName().toLowerCase(Locale.ROOT).endsWith(".jar")) continue;
+                            if (++jarCount > LOCAL_ZIP_MAX_JARS) throw new IOException("Too many jars in ZIP");
+                            if (entry.getSize() > LOCAL_JAR_MAX_BYTES) {
+                                result.rejected++; log.log("Oversized jar skipped: " + entry.getName()); continue;
+                            }
+                            try (InputStream input = zip.getInputStream(entry)) {
+                                importLocalJar(input, entry.getName(), modsDir, loader,
+                                        overwrite, tracked, seen, result, log);
+                            }
+                        }
+                        if (jarCount == 0) {
+                            result.rejected++; log.log("ZIP contains no mod jars: " + path.getFileName());
+                        }
+                    }
+                } else {
+                    result.rejected++; log.log("Unsupported file: " + path.getFileName());
+                }
+            } catch (IOException exception) {
+                result.rejected++; log.log("Could not import " + path.getFileName() + ": " + exception.getMessage());
+            }
+        }
+        return result;
+    }
+
     // ============================================================ the app (Swing)
     final Map<String, Object> cfg = loadConfig();
     final AtomicBoolean busy = new AtomicBoolean();
@@ -1928,8 +2053,8 @@ public class SkyLauncher {
                     ()->openVisualUrl("https://skylauncher.fathomstudios.org"),
                     ()->showVisualPage("Home")})),"News");
         screenRoot.add(visualPage("PACKS", "Manage modpacks and installed mods",
-            actionsGrid(new String[]{"Mod Manager", "Install Fathom Pack", "Install Pack from Link", "Check All Pack Updates", "Search Modpacks", "Check Active Pack"},
-                new Runnable[]{()->showWorkspace(0,false),this::installFathom,this::installPackDialog,this::checkAllPackUpdates,this::searchModpacks,this::checkPackUpdate})),"Packs");
+            actionsGrid(new String[]{"Mod Manager", "Import mod JARs / ZIPs", "Install Fathom Pack", "Install Pack from Link", "Check All Pack Updates", "Search Modpacks", "Check Active Pack"},
+                new Runnable[]{()->showWorkspace(0,false),this::chooseLocalMods,this::installFathom,this::installPackDialog,this::checkAllPackUpdates,this::searchModpacks,this::checkPackUpdate})),"Packs");
 
         JPanel instanceContent=new JPanel();instanceContent.setOpaque(false);
         instanceContent.setLayout(new BoxLayout(instanceContent,BoxLayout.Y_AXIS));
@@ -2381,7 +2506,10 @@ public class SkyLauncher {
         addField = new JTextField(); addField.setPreferredSize(new Dimension(120,32));
         addField.addActionListener(e -> addMod());
         addInput.add(addField,BorderLayout.CENTER);
-        addInput.add(actionButton("Add mod",this::addMod,ACCENT),BorderLayout.EAST);
+        JPanel modButtons = paddedRow(8);
+        modButtons.add(actionButton("Add mod",this::addMod,ACCENT));
+        modButtons.add(btn("Import .jar / .zip", this::chooseLocalMods));
+        addInput.add(modButtons,BorderLayout.EAST);
         addCard.add(addInput,BorderLayout.CENTER);
         JLabel tip = new JLabel("GitHub URL  ·  Modrinth link  ·  CurseForge mod URL  ·  curseforge:123456  ·  direct .jar URL");
         tip.setForeground(MUTED); tip.setFont(new Font("Dialog",Font.PLAIN,12));
@@ -2862,6 +2990,33 @@ public class SkyLauncher {
     }
 
     // ---- mods
+    void chooseLocalMods() {
+        if (busy.get() || game != null) {
+            notifyUser("Close Minecraft and finish any active download before importing mods.");
+            return;
+        }
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Import local mod JARs or ZIP archives");
+        chooser.setMultiSelectionEnabled(true);
+        chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Minecraft mods (*.jar, *.zip)", "jar", "zip"));
+        if (chooser.showOpenDialog(frame) != JFileChooser.APPROVE_OPTION) return;
+        List<Path> selected = Arrays.stream(chooser.getSelectedFiles()).map(File::toPath).toList();
+        if (selected.isEmpty()) return;
+        int choice = JOptionPane.showConfirmDialog(frame,
+                "Import mods into profile '" + active() + "'?\n\n"
+                + "ZIPs: only contained JAR mods will be imported.\n"
+                + "Existing mods downloaded by SkyLauncher will not be replaced.\n\n"
+                + "Replace other existing JARs when filenames match?\n"
+                + "(No = skip duplicates; Cancel = don't import)",
+                "Import local mods", JOptionPane.YES_NO_CANCEL_OPTION);
+        if (choice == JOptionPane.CANCEL_OPTION || choice == JOptionPane.CLOSED_OPTION) return;
+        Map<String, Object> target = inst();
+        async("Import local mods", () -> {
+            LocalImportResult result = importLocalMods(selected, target, choice == JOptionPane.YES_OPTION, this::log);
+            log(result.summary());
+            notifyUser(result.summary());
+        });
+    }
     String modLabel(Map<String, Object> inst, String key) { String nm = s(m(m(inst.get("mods")).get(key)).get("name")); return nm.isEmpty() ? key : nm; }
     void addMod() {
         String text = addField.getText().trim();
