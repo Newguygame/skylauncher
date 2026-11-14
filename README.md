@@ -75,8 +75,8 @@ from GitHub Actions.
 
 ### Publishing
 
-The build workflow publishes `v3.1.4` only for a push to `main` with commit title beginning
-`Release SkyLauncher 3.1.4`, or on a `v*` tag push. The release job waits for platform builds
+The build workflow publishes `v3.1.8` only for a push to `main` with commit title beginning
+`Release SkyLauncher 3.1.8`, or on a `v*` tag push. The release job waits for platform builds
 and tests to pass. This is the requested exception to the no-version-bump policy.
 
 
@@ -93,9 +93,18 @@ will not be offered. Minecraft worlds, modpacks and user settings are never dele
 On Linux, native `.deb` updating requires `pkexec`; on macOS, an app in a protected
 location may require moving it into `~/Applications`.
 
-## SkyLauncher 3.1.7
+## SkyLauncher 3.1.8
 
 - Modrinth and CurseForge modpacks automatically select their specified Minecraft version and mod loader, including the required NeoForge version. Cached loader installations are reset when the required version changes.
 - GitHub packs can provide `skylauncher-pack.json` containing `minecraft`, `loader`, and `loader_version`; supported CurseForge `manifest.json` metadata is also recognized.
 - Visual profile action labels follow the currently selected Minecraft profile.
 - Brief operational notices appear in a small rounded overlay. Long diagnostic messages are sent to Tools & Logs.
+
+## SkyLauncher 3.1.8
+
+- Import local `.jar` mods directly into the selected Minecraft profile.
+- Import `.zip` archives containing multiple mod JARs; JARs in nested folders are supported.
+- Reject unsafe archive paths, invalid mod files, and files incompatible with the selected mod loader.
+- Avoid overwriting SkyLauncher-managed mods, skip duplicates by default, and show an import summary.
+- Java desktop edition only; the Python edition is unchanged.
+- The launcher continues checking signed-in user's configured official GitHub Releases source on startup and only offers verified platform assets with SHA-256 digests. Minecraft data remains in `~/.ghmodlauncher`.
