@@ -2,6 +2,7 @@
 set -euo pipefail
 mkdir -p build/ci/classes build/ci/launcher build/ci/setup/bundled
 javac --release 17 -encoding UTF-8 -d build/ci/classes src/SkyLauncher.java src/SkyLauncherSetup.java
+bash scripts/copy_assets.sh build/ci/classes
 javac --release 17 -encoding UTF-8 -cp build/ci/classes -d build/ci/classes tests/TestLocalModImport.java
 java -ea -cp build/ci/classes TestLocalModImport
 find build/ci/classes -maxdepth 1 -name 'SkyLauncher*.class' ! -name 'SkyLauncherSetup*.class' -exec cp {} build/ci/launcher/ \;
