@@ -1276,9 +1276,7 @@ public class SkyLauncher {
                         log.log("CurseForge cannot deliver " + filename + " (" + unavailable.getMessage() +
                             "); checking official Modrinth releases...");
                         try {
-                            Map<String,Object> projectInfo;
-                            try { projectInfo = m(cf(cfg, "/v1/mods/" + modId + "/identity")); }
-                            catch (IOException olderRelay) { projectInfo = m(cf(cfg, "/v1/mods/" + modId)); }
+                            Map<String,Object> projectInfo = m(cf(cfg, "/v1/mods/" + modId));
                             String projectName = s(projectInfo.get("name"));
                             if (!projectName.isBlank()) filename = projectName + " [CF " + modId + "/" + modFileId + "]";
                             Map<String,Object> modrinth = findModrinthReplacement(cfg, projectInfo, modId, mc, loader);
@@ -3709,9 +3707,7 @@ public class SkyLauncher {
             Map<String,Object> targetInstance, boolean auto, String parent, String reason) {
         String cfId = key.substring("curseforge:".length());
         try {
-            Map<String,Object> cfIdentity;
-            try { cfIdentity = m(cf(cfg, "/v1/mods/" + cfId + "/identity")); }
-            catch (IOException olderRelay) { cfIdentity = m(cf(cfg, "/v1/mods/" + cfId)); }
+            Map<String,Object> cfIdentity = m(cf(cfg, "/v1/mods/" + cfId));
             String mc = s(targetInstance.get("mc_version")), loader = s(targetInstance.get("loader"));
             Map<String,Object> replacement = findModrinthReplacement(cfg, cfIdentity, cfId, mc, loader);
             if (replacement == null) throw new IOException("no verified " + mc + "/" + loader + " Modrinth release");
@@ -3836,7 +3832,7 @@ public class SkyLauncher {
             if (!have.isEmpty() && Files.exists(dir.resolve(s(have.get("file"))))) continue;
             String nm;
             if (cfDep) {
-                try { nm = s(m(cf(cfg,"/v1/mods/"+enc(k2.substring(11))+"/identity")).get("name")); }
+                try { nm = s(m(cf(cfg,"/v1/mods/"+enc(k2.substring(11)))).get("name")); }
                 catch (IOException e) { nm = k2; }
             }
             else nm = s(m(mr(cfg,"/project/"+enc(s(d)))).get("title"));
