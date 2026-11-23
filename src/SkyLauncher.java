@@ -44,6 +44,7 @@ public class SkyLauncher {
     static final String SEP = File.pathSeparator;
     static final String MSA_CLIENT_ID = "54473e32-df8f-42e9-a649-9419b0dab9d3";
     static final String MSA_SCOPE = "XboxLive.signin offline_access openid profile";
+    static final ThreadLocal<List<String>> MISSING_PACK_FILES = new ThreadLocal<>();
     static final String[] PACK_FOLDERS = {"mods", "config", "imported_world_presets", "resourcepacks", "shaderpacks",
             "datapacks", "kubejs", "scripts", "defaultconfigs"};
     static final Set<String> SKIP_DEPS = Set.of("minecraft", "java", "forge", "neoforge", "fabricloader", "fabric-loader",
@@ -1327,7 +1328,9 @@ public class SkyLauncher {
             if (!missingMods.isEmpty()) {
                 log.log("Missing mods after CurseForge and Modrinth fallback (" + missingMods.size() + "): " +
                     String.join("; ", missingMods));
-                showMissingModsAtEnd(name, missingMods);
+                List<String> aggregated = MISSING_PACK_FILES.get();
+                if (aggregated != null) for (String missing : missingMods) aggregated.add(name + ": " + missing);
+                else showMissingModsAtEnd(name, missingMods);
             }
         } finally { deleteTree(work); }
     }
@@ -1862,10 +1865,13 @@ public class SkyLauncher {
         if (busy.get() || game != null) { log("Busy or game running - wait."); return; }
         setBusy(true); saveSettings();
         Thread t = new Thread(() -> {
+            MISSING_PACK_FILES.set(new ArrayList<>());
             try { r.run(); } catch (HttpErr e) { log(what + " ERROR: " + e.getMessage() + (e.code == 401 || e.code == 403 || e.code == 404 ? " (private repo? set a token)" : "")); }
             catch (Exception e) { notifyUser(what + " failed: " + e.getMessage()); }
             finally {
                 List<String> unresolved = new ArrayList<>(missingModsThisTask.get());
+                unresolved.addAll(MISSING_PACK_FILES.get());
+                MISSING_PACK_FILES.remove();
                 missingModsThisTask.remove();
                 if (!unresolved.isEmpty()) {
                     log("Missing mods after both CurseForge and Modrinth (" + unresolved.size() +
