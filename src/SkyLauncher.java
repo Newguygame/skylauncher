@@ -4188,6 +4188,57 @@ public class SkyLauncher {
         check(SURFACE.getRGB() != BG.getRGB(), "background surface contrast");
         setShade("White", "", "", "");
         check(BG.equals(Color.WHITE) && FG.equals(new Color(0x171717)), "preset theme colors");
+        // Format correctness and file selection are checked locally, without platform requests.
+        Path exportRoot = Files.createTempDirectory("skylauncher-export-selftest-");
+        try {
+            Path instanceRoot = exportRoot.resolve("instance");
+            Files.createDirectories(instanceRoot.resolve("mods"));
+            Files.createDirectories(instanceRoot.resolve("config"));
+            Path setting = instanceRoot.resolve("config/common.toml");
+            Path jarFile = instanceRoot.resolve("mods/sample.jar");
+            Files.writeString(setting, "sample=true\n");
+            Files.write(jarFile, new byte[]{1,2,3,4,5,6});
+            Map<String,Object> profile = defaultInstance("Export", "1.21.1", "neoforge");
+            profile.put("mods_dir", instanceRoot.resolve("mods").toString());
+            Map<String,Object> tracked = new LinkedHashMap<>();
+            tracked.put("curseforge:12345", Map.of("file","sample.jar","version_id","54321",
+                "sha256",fileDigest("SHA-256",jarFile)));
+            profile.put("mods",tracked);
+            ExportOptions modrinth = new ExportOptions();
+            modrinth.format = "modrinth"; modrinth.name = "Example"; modrinth.version = "1.0.0";
+            modrinth.loaderVersion = "21.1.200"; modrinth.author = "Tester"; modrinth.files.add(setting);
+            Path mrArchive = exportRoot.resolve("test.mrpack");
+            exportModpack(Map.of(),profile,mrArchive,modrinth,unused -> {});
+            try (ZipFile zip = new ZipFile(mrArchive.toFile())) {
+                check(zip.getEntry("modrinth.index.json") != null, "mrpack index created");
+                check(zip.getEntry("overrides/config/common.toml") != null, "mrpack selected config present");
+                check(zip.getEntry("overrides/mods/sample.jar") == null, "mrpack unselected mod absent");
+                Map<String,Object> index = m(Json.parse(new String(zip.getInputStream(zip.getEntry("modrinth.index.json")).readAllBytes(), StandardCharsets.UTF_8)));
+                check("21.1.200".equals(s(m(index.get("dependencies")).get("neoforge"))), "mrpack loader metadata");
+            }
+            ExportOptions curseforge = new ExportOptions();
+            curseforge.format = "curseforge"; curseforge.name = "Example"; curseforge.version = "1.0.0";
+            curseforge.loaderVersion = "21.1.200"; curseforge.author = "Tester";
+            curseforge.files.add(setting); curseforge.files.add(jarFile);
+            Path cfArchive = exportRoot.resolve("test.zip");
+            exportModpack(Map.of(),profile,cfArchive,curseforge,unused -> {});
+            try (ZipFile zip = new ZipFile(cfArchive.toFile())) {
+                check(zip.getEntry("manifest.json") != null, "CurseForge manifest created");
+                check(zip.getEntry("overrides/config/common.toml") != null, "CurseForge overrides present");
+                check(zip.getEntry("overrides/mods/sample.jar") == null, "CurseForge tracked mod not copied");
+                Map<String,Object> manifest = m(Json.parse(new String(zip.getInputStream(zip.getEntry("manifest.json")).readAllBytes(), StandardCharsets.UTF_8)));
+                check(l(manifest.get("files")).size() == 1 &&
+                    n(m(l(manifest.get("files")).get(0)).get("projectID"),-1) == 12345,
+                    "CurseForge exact tracked mod reference");
+            }
+            check(!safeExportFile(instanceRoot, exportRoot.resolve("test.zip")), "export rejects outside files");
+            Map<String,Object> cfMod = Map.of("slug", "test-mod", "name", "Test Mod");
+            check(verifiedModrinthIdentity(cfMod, Map.of("project_type","mod","slug","test-mod","title","Test Mod"),
+                "12345"), "verified Modrinth project identity");
+            check(!verifiedModrinthIdentity(cfMod,
+                Map.of("project_type","mod","slug","unrelated","title","Fake"),"12345"),
+                "unrelated Modrinth project is rejected");
+        } finally { deleteTree(exportRoot); }
         // Custom icons are optional; an icon-free build is valid.
         System.out.println("selftest OK  (os=" + OS + " arch=" + ARCH + ")");
     }
