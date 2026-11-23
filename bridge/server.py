@@ -145,27 +145,18 @@ class CFClient:
                 for o in data if isinstance(o, dict) and isinstance(o.get("id"), int)
                 and o.get("allowModDistribution") is not False and o.get("isAvailable") is not False]
 
-    def get_mod(self, mid, kind="mod"):
+    def get_mod(self, mid, kind="mod", metadata_only=False):
         if kind not in CLASS_IDS:
             raise RelayError(400, "Invalid project type")
         data = cf_api(f"/mods/{mid}", self.api_key) or {}
         if data.get("gameId") != 432 or (data.get("classId") is not None and data["classId"] != CLASS_IDS[kind]):
             raise RelayError(404, "Not a Minecraft " + kind)
-        if data.get("allowModDistribution") is False:
+        if data.get("allowModDistribution") is False and not metadata_only:
             raise RelayError(403, "This author does not permit third-party distribution")
         if data.get("isAvailable") is False:
             raise RelayError(403, "This CurseForge project is unavailable")
-        return {"id": data.get("id"), "name": data.get("name"), "slug": data.get("slug")}
-
-    def identity(self, mid):
-        # Metadata-only lookup for platform-independent Modrinth resolution.
-        # Never exposes the API key, download URLs, or restricted mod bytes.
-        data = cf_api(f"/mods/{mid}", self.api_key) or {}
-        if data.get("gameId") != 432 or (data.get("classId") is not None and data["classId"] != CLASS_IDS["mod"]):
-            raise RelayError(404, "Not a Minecraft mod")
-        if data.get("isAvailable") is False:
-            raise RelayError(404, "CurseForge project is not public")
-        return {"id": data.get("id"), "name": data.get("name"), "slug": data.get("slug")}
+        return {"id": data.get("id"), "name": data.get("name"), "slug": data.get("slug"),
+                "distributionAllowed": data.get("allowModDistribution") is not False}
 
     def files(self, mid, version, loader, kind="mod"):
         self.get_mod(mid, kind=kind)
@@ -309,15 +300,14 @@ class Handler(BaseHTTPRequestHandler):
                 if exact is None:
                     raise RelayError(404, "No Minecraft mod found for slug")
                 return self.send_json(200, exact)
-            match = re.fullmatch(r"/v1/mods/([0-9]+)/identity", url.path)
-            if match:
-                return self.send_json(200, self.server.cf.identity(valid_id(match.group(1))))
             match = re.fullmatch(r"/v1/mods/([0-9]+)(?:/files)?", url.path)
             if match:
                 mid = valid_id(match.group(1))
                 if url.path.endswith("/files"):
                     return self.send_json(200, {"data": self.server.cf.files(mid, version, loader)})
-                return self.send_json(200, self.server.cf.get_mod(mid))
+                # Public project title/slug may be read for safe Modrinth matching,
+                # but all file metadata and downloads still enforce author permissions.
+                return self.send_json(200, self.server.cf.get_mod(mid, metadata_only=True))
             match = re.fullmatch(r"/v1/packs/([0-9]+)(?:/files)?", url.path)
             if match:
                 mid = valid_id(match.group(1))
