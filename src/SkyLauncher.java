@@ -1099,6 +1099,120 @@ public class SkyLauncher {
         }
         log.log("Extracted " + count + " modpack override files");
     }
+
+    // A CurseForge API file can be unavailable to third-party clients even while its
+    // project metadata is visible. Use only an independently published Modrinth build.
+    static String normalizedModName(String value) {
+        return value == null ? "" : value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+    }
+    static boolean verifiedModrinthIdentity(Map<String,Object> curseForge, Map<String,Object> modrinth, String cfId) {
+        String cfSlug = s(curseForge.get("slug"));
+        String cfName = s(curseForge.get("name"));
+        String mrSlug = s(modrinth.get("slug"));
+        String mrName = s(modrinth.get("title"));
+        if (!"mod".equals(s(modrinth.get("project_type")))) return false;
+        if (!cfSlug.isBlank() && !mrSlug.isBlank() && cfSlug.equalsIgnoreCase(mrSlug)
+                && normalizedModName(cfName).equals(normalizedModName(mrName))) return true;
+        // Different platform slugs are common; require an explicit CurseForge URL
+        // linking to the exact project or slug rather than a fuzzy search match.
+        String description = s(modrinth.get("body")) + " " + s(modrinth.get("description"));
+        for (Object o : l(modrinth.get("links"))) description += " " + s(m(o).get("url"));
+        for (String field : List.of("source_url", "wiki_url", "issues_url")) description += " " + s(modrinth.get(field));
+        String link = "curseforge.com/minecraft/mc-mods/";
+        if (!cfSlug.isBlank() && description.toLowerCase(Locale.ROOT).contains(link + cfSlug.toLowerCase(Locale.ROOT))) return true;
+        return description.matches("(?s).*curseforge\\.com/minecraft/mc-mods/[^\\s)]+/files/[^\\s)]*") &&
+            description.contains(cfId);
+    }
+    static Map<String,Object> findModrinthReplacement(Map<String,Object> cfg,
+            Map<String,Object> cfProject, String cfId, String mc, String loader) throws IOException {
+        String slug = s(cfProject.get("slug")).trim(), name = s(cfProject.get("name")).trim();
+        if (slug.isBlank() && name.isBlank()) return null;
+        List<Map<String,Object>> candidates = new ArrayList<>();
+        if (!slug.isBlank()) {
+            try { candidates.add(m(mr(cfg, "/project/" + enc(slug)))); }
+            catch (IOException ignored) { }
+        }
+        String query = !name.isBlank() ? name : slug;
+        for (Object result : l(m(mr(cfg, "/search?query=" + enc(query) +
+                "&limit=15&facets=" + enc("[[\"project_type:mod\"]]"))).get("hits"))) {
+            String id = s(m(result).get("project_id"));
+            if (id.isBlank() || candidates.stream().anyMatch(p -> id.equals(s(p.get("id"))))) continue;
+            try { candidates.add(m(mr(cfg, "/project/" + enc(id)))); }
+            catch (IOException ignored) { }
+        }
+        for (Map<String,Object> candidate : candidates) {
+            if (!verifiedModrinthIdentity(cfProject, candidate, cfId)) continue;
+            String requestedLoaders = loader.equals("quilt") ? "[\"quilt\",\"fabric\"]" :
+                    "[\"" + loader + "\"]";
+            List<Object> versions = l(mr(cfg, "/project/" + enc(s(candidate.get("id"))) + "/version?loaders=" +
+                    enc(requestedLoaders) + "&game_versions=" + enc("[\"" + mc + "\"]")));
+            versions.sort((left,right) -> {
+                boolean a = "release".equals(s(m(left).get("version_type")));
+                boolean b = "release".equals(s(m(right).get("version_type")));
+                return Boolean.compare(b, a);
+            });
+            for (Object version : versions) {
+                Map<String,Object> v = m(version);
+                if (!l(v.get("game_versions")).contains(mc)) continue;
+                if (!l(v.get("loaders")).contains(loader) &&
+                        !(loader.equals("quilt") && l(v.get("loaders")).contains("fabric"))) continue;
+                for (Object file : l(v.get("files"))) {
+                    Map<String,Object> artifact = m(file);
+                    String filename = s(artifact.get("filename"));
+                    if (!filename.matches("[A-Za-z0-9][A-Za-z0-9_.+() -]{0,180}\\.jar")) continue;
+                    String url = s(artifact.get("url"));
+                    try {
+                        URI uri = URI.create(url);
+                        String hostname = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
+                        if (!"https".equalsIgnoreCase(uri.getScheme()) || !hostname.equals("cdn.modrinth.com")) continue;
+                    } catch (IllegalArgumentException invalid) { continue; }
+                    Map<String,Object> hashes = m(artifact.get("hashes"));
+                    if (!s(hashes.get("sha1")).matches("(?i)[a-f0-9]{40}")) continue;
+                    Map<String,Object> answer = new LinkedHashMap<>();
+                    answer.put("name", filename);
+                    answer.put("url", url);
+                    answer.put("sha1", hashes.get("sha1"));
+                    answer.put("project", s(candidate.get("title")));
+                    answer.put("version", s(v.get("version_number")));
+                    answer.put("project_id", s(candidate.get("id")));
+                    return answer;
+                }
+            }
+        }
+        return null;
+    }
+    static void downloadModrinthReplacement(Map<String,Object> file, Path destination) throws IOException {
+        String url = s(file.get("url")), sha1 = s(file.get("sha1"));
+        // Our standard fetcher verifies SHA-1 and creates the containing directory.
+        // A bounded streaming copy avoids loading an entire large jar into memory.
+        Files.createDirectories(destination.getParent());
+        Path temporary = destination.resolveSibling(destination.getFileName() + ".part");
+        long size = 0;
+        try (InputStream input = open("GET", url, null, null).body();
+             OutputStream output = Files.newOutputStream(temporary)) {
+            byte[] buf = new byte[65536]; int len;
+            while ((len = input.read(buf)) != -1) {
+                size += len;
+                if (size > 128L * 1024 * 1024) throw new IOException("Modrinth file exceeds 128 MiB");
+                output.write(buf, 0, len);
+            }
+            if (!fileDigest("SHA-1", temporary).equalsIgnoreCase(sha1))
+                throw new IOException("Modrinth replacement failed SHA-1 verification");
+            Files.move(temporary, destination, StandardCopyOption.REPLACE_EXISTING);
+        } finally { Files.deleteIfExists(temporary); }
+    }
+    static void showMissingModsAtEnd(String packName, List<String> missing) {
+        if (missing.isEmpty() || GraphicsEnvironment.isHeadless()) return;
+        SwingUtilities.invokeLater(() -> {
+            JTextArea area = new JTextArea(String.join("\n", missing));
+            area.setEditable(false);
+            area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+            JScrollPane pane = new JScrollPane(area);
+            pane.setPreferredSize(new Dimension(680, Math.min(400, 50 + missing.size() * 24)));
+            JOptionPane.showMessageDialog(null, pane,
+                "Missing mods (" + missing.size() + ") — " + packName, JOptionPane.WARNING_MESSAGE);
+        });
+    }
     static void installCurseForgePack(Map<String, Object> cfg, String projectId,
             Map<String, Object> inst, boolean clear, Log log) throws Exception {
         Map<String,Object> project = m(cf(cfg, "/v1/packs/" + projectId));
@@ -1115,6 +1229,7 @@ public class SkyLauncher {
             Map<String,Object> manifest;
             String mc = "", loader = "", loaderVersion = "";
             int downloaded = 0;
+            List<String> missingMods = new ArrayList<>();
             try (ZipFile z = new ZipFile(zipPath.toFile())) {
                 ZipEntry meta = z.getEntry("manifest.json");
                 if (meta == null || meta.getSize() > 4 * 1024 * 1024) throw new IOException("CurseForge zip has no valid manifest.json");
@@ -1145,14 +1260,44 @@ public class SkyLauncher {
                     String modId = s(entry.get("projectID")), modFileId = s(entry.get("fileID"));
                     if (!modId.matches("[1-9][0-9]{0,12}") || !modFileId.matches("[1-9][0-9]{0,12}"))
                         throw new IOException("Invalid project/file ID in CurseForge pack manifest");
-                    Map<String,Object> info = m(cf(cfg, "/v1/mods/" + modId + "/files/" + modFileId));
-                    String filename = s(info.get("name"));
-                    if (!filename.matches("[A-Za-z0-9][A-Za-z0-9_.+() -]{0,180}\\.jar"))
-                        throw new IOException("Invalid mod filename from CurseForge: " + filename);
-                    Path dest = safeJoin(stage, "mods/" + filename);
-                    fetchBridgeFile(cfg, modId, modFileId, dest, s(info.get("sha1")), 128L * 1024 * 1024);
-                    downloaded++;
-                    if (downloaded % 25 == 0) log.log("CurseForge mod files: " + downloaded + "/" + mods.size());
+                    String filename = "project " + modId + " / file " + modFileId;
+                    try {
+                        Map<String,Object> info = m(cf(cfg, "/v1/mods/" + modId + "/files/" + modFileId));
+                        filename = s(info.get("name"));
+                        if (!filename.matches("[A-Za-z0-9][A-Za-z0-9_.+() -]{0,180}\\.jar"))
+                            throw new IOException("Invalid mod filename from CurseForge: " + filename);
+                        Path dest = safeJoin(stage, "mods/" + filename);
+                        fetchBridgeFile(cfg, modId, modFileId, dest, s(info.get("sha1")), 128L * 1024 * 1024);
+                        downloaded++;
+                    } catch (IOException unavailable) {
+                        log.log("CurseForge cannot deliver " + filename + " (" + unavailable.getMessage() +
+                            "); checking official Modrinth releases...");
+                        try {
+                            Map<String,Object> projectInfo = m(cf(cfg, "/v1/mods/" + modId));
+                            String projectName = s(projectInfo.get("name"));
+                            if (!projectName.isBlank()) filename = projectName + " [CF " + modId + "/" + modFileId + "]";
+                            Map<String,Object> modrinth = findModrinthReplacement(cfg, projectInfo, modId, mc, loader);
+                            if (modrinth == null) {
+                                missingMods.add(filename + " — no verified compatible Modrinth release");
+                                continue;
+                            }
+                            String jar = s(modrinth.get("name"));
+                            Path dest = safeJoin(stage, "mods/" + jar);
+                            if (Files.exists(dest)) {
+                                if (!fileDigest("SHA-1", dest).equalsIgnoreCase(s(modrinth.get("sha1")))) {
+                                    missingMods.add(filename + " — different mod already uses " + jar);
+                                    continue;
+                                }
+                            } else downloadModrinthReplacement(modrinth, dest);
+                            downloaded++;
+                            log.log("Restored " + filename + " using Modrinth: " + modrinth.get("project") +
+                                " " + modrinth.get("version") + " (" + mc + "/" + loader + ")");
+                        } catch (Exception fallbackError) {
+                            missingMods.add(filename + " — " + fallbackError.getMessage());
+                            log.log("No Modrinth replacement for " + filename + ": " + fallbackError.getMessage());
+                        }
+                    }
+                    if (downloaded % 25 == 0 && downloaded > 0) log.log("CurseForge pack files: " + downloaded + "/" + mods.size());
                 }
                 String overrides = s(manifest.get("overrides"));
                 if (overrides.isEmpty()) overrides = "overrides";
@@ -1175,6 +1320,11 @@ public class SkyLauncher {
             inst.put("pack_name", name); inst.put("pack_version", s(file.get("name")));
             inst.put("pack_url", "https://www.curseforge.com/minecraft/modpacks/" + s(project.get("slug")));
             log.log("CurseForge pack ready: " + name + " (" + downloaded + " mods); requires " + mc + " " + loader);
+            if (!missingMods.isEmpty()) {
+                log.log("Missing mods after CurseForge and Modrinth fallback (" + missingMods.size() + "): " +
+                    String.join("; ", missingMods));
+                showMissingModsAtEnd(name, missingMods);
+            }
         } finally { deleteTree(work); }
     }
 
