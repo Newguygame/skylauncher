@@ -1178,6 +1178,296 @@ public class SkyLauncher {
         } finally { deleteTree(work); }
     }
 
+
+    // ============================================================ portable modpack exports
+    // Export only selected instance files. Platform-managed mods are recorded by their
+    // exact hashes or IDs; unknown jars are never silently called platform downloads.
+    static final class ExportOptions {
+        String format, name, version, author, loaderVersion;
+        boolean bundleUnmatched;
+        List<Path> files = new ArrayList<>();
+    }
+    static String exportLoaderVersion(Map<String,Object> instance) {
+        String explicit = s(instance.get("loader_version")).trim();
+        if (!explicit.isEmpty()) return explicit;
+        String loader = s(instance.get("loader")).toLowerCase(Locale.ROOT);
+        String installed = s(instance.get("version_id"));
+        String token = loader + "-";
+        int at = installed.toLowerCase(Locale.ROOT).lastIndexOf(token);
+        return at < 0 ? "" : installed.substring(at + token.length());
+    }
+    static boolean safeExportFile(Path root, Path selected) {
+        Path file = selected.toAbsolutePath().normalize();
+        if (!file.startsWith(root.toAbsolutePath().normalize()) || !Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) return false;
+        Path relative = root.toAbsolutePath().normalize().relativize(file);
+        if (relative.getNameCount() == 0) return false;
+        String top = relative.getName(0).toString().toLowerCase(Locale.ROOT);
+        if (Set.of("logs", "crash-reports", "screenshots", "backups", "versions", "libraries", "assets",
+                "natives", "runtime", ".git", ".cache", "journeymap").contains(top)) return false;
+        for (Path segment : relative) {
+            String part = segment.toString().toLowerCase(Locale.ROOT);
+            if (part.equals("..") || part.startsWith(".") || part.equals("session.lock") ||
+                part.endsWith(".log") || part.endsWith(".part") || part.endsWith(".tmp") ||
+                part.endsWith(".token") || part.endsWith(".pem") || part.endsWith(".key") ||
+                part.contains("password") || part.contains("credential") || part.contains("secret")) return false;
+        }
+        return true;
+    }
+    static List<Path> exportableFiles(Path gameFolder) throws IOException {
+        List<Path> found = new ArrayList<>();
+        if (!Files.isDirectory(gameFolder)) return found;
+        try (var walk = Files.walk(gameFolder)) {
+            for (Path path : (Iterable<Path>)walk::iterator) {
+                if (!safeExportFile(gameFolder, path)) continue;
+                if (found.size() >= 15000) throw new IOException("Instance contains too many exportable files (limit 15000).");
+                found.add(path);
+            }
+        }
+        found.sort(Comparator.comparing(p -> gameFolder.relativize(p).toString()));
+        return found;
+    }
+    static String exportPath(Path root, Path file) throws IOException {
+        Path relative = root.toAbsolutePath().normalize().relativize(file.toAbsolutePath().normalize());
+        String name = relative.toString().replace('\\', '/');
+        if (name.isBlank() || name.startsWith("/") || name.contains("../") || name.contains("\r") || name.contains("\n"))
+            throw new IOException("Unsafe export file path: " + name);
+        return name;
+    }
+    static boolean defaultExportSelection(String name) {
+        String top = name.contains("/") ? name.substring(0, name.indexOf('/')) : name;
+        return Arrays.asList(PACK_FOLDERS).contains(top) || Set.of("icon.png", "pack.png", "optionsof.txt").contains(name);
+    }
+    static Map<String,Object> modrinthExportFile(Map<String,Object> cfg, Path file, String rel) throws Exception {
+        String sha1 = fileDigest("SHA-1", file);
+        Map<String,Object> match;
+        try { match = m(mr(cfg, "/version_file/" + sha1 + "?algorithm=sha1")); }
+        catch (Exception notOnModrinth) { return null; }
+        for (Object candidate : l(match.get("files"))) {
+            Map<String,Object> f = m(candidate), hashes = m(f.get("hashes"));
+            if (!sha1.equalsIgnoreCase(s(hashes.get("sha1")))) continue;
+            String url = s(f.get("url"));
+            try {
+                URI uri = URI.create(url);
+                String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
+                if (!"https".equalsIgnoreCase(uri.getScheme()) ||
+                        !(host.equals("cdn.modrinth.com") || host.equals("cdn-raw.modrinth.com") ||
+                          host.equals("github.com") || host.equals("raw.githubusercontent.com") ||
+                          host.equals("gitlab.com"))) continue;
+            } catch (IllegalArgumentException invalid) { continue; }
+            Map<String,Object> output = new LinkedHashMap<>();
+            output.put("path", rel);
+            output.put("hashes", Map.of("sha1", sha1, "sha512", fileDigest("SHA-512", file)));
+            output.put("downloads", List.of(url));
+            output.put("fileSize", Files.size(file));
+            return output;
+        }
+        return null;
+    }
+    static Map<String,Object> curseForgeExportFile(Map<String,Object> instance, Path file, String rel) throws IOException {
+        String filename = file.getFileName().toString();
+        for (var entry : m(instance.get("mods")).entrySet()) {
+            if (!entry.getKey().startsWith("curseforge:")) continue;
+            Map<String,Object> info = m(entry.getValue());
+            if (!filename.equals(s(info.get("file")))) continue;
+            String id = entry.getKey().substring("curseforge:".length());
+            String version = s(info.get("version_id"));
+            if (!id.matches("[1-9][0-9]{0,12}") || !version.matches("[1-9][0-9]{0,12}")) continue;
+            // Never export stale metadata after a jar has been modified/replaced.
+            String expected = s(info.get("sha256"));
+            if (expected.isEmpty() || !expected.equalsIgnoreCase(fileDigest("SHA-256", file))) continue;
+            return new LinkedHashMap<>(Map.of("projectID", Long.parseLong(id),
+                "fileID", Long.parseLong(version), "required", true));
+        }
+        return null;
+    }
+    static void zipString(ZipOutputStream archive, String name, String text) throws IOException {
+        archive.putNextEntry(new ZipEntry(name));
+        archive.write(text.getBytes(StandardCharsets.UTF_8));
+        archive.closeEntry();
+    }
+    static void zipPath(ZipOutputStream archive, Path file, String name) throws IOException {
+        archive.putNextEntry(new ZipEntry(name));
+        Files.copy(file, archive);
+        archive.closeEntry();
+    }
+    static void exportModpack(Map<String,Object> cfg, Map<String,Object> instance,
+            Path destination, ExportOptions options, Log log) throws Exception {
+        Path game = gameDir(instance).toAbsolutePath().normalize();
+        String mc = s(instance.get("mc_version")).trim();
+        String loader = s(instance.get("loader")).toLowerCase(Locale.ROOT);
+        if (!mc.matches("[0-9]+(?:\\.[0-9A-Za-z_-]+){1,4}") || !Arrays.asList(LOADERS).contains(loader))
+            throw new IOException("Set a valid Minecraft version and supported loader first.");
+        if (options.name == null || options.name.isBlank() || options.version == null || options.version.isBlank()
+                || options.loaderVersion == null || options.loaderVersion.isBlank())
+            throw new IOException("Pack name, pack version and loader version are required.");
+        if (!options.format.equals("modrinth") && !options.format.equals("curseforge"))
+            throw new IOException("Unknown export format.");
+        String outputExtension = options.format.equals("modrinth") ? ".mrpack" : ".zip";
+        if (!destination.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(outputExtension))
+            throw new IOException("Export name must end with " + outputExtension);
+        Set<String> selected = new LinkedHashSet<>();
+        List<Map<String,Object>> filesIndex = new ArrayList<>();
+        List<Map<String,Object>> cfFiles = new ArrayList<>();
+        List<Path> overrides = new ArrayList<>();
+        List<String> unresolved = new ArrayList<>();
+        for (Path input : options.files) {
+            if (!safeExportFile(game, input)) throw new IOException("A selected file is unavailable or unsafe: " + input);
+            String rel = exportPath(game, input);
+            if (!selected.add(rel)) continue;
+            if (rel.startsWith("mods/") && rel.toLowerCase(Locale.ROOT).endsWith(".jar")) {
+                if (options.format.equals("modrinth")) {
+                    Map<String,Object> mod = modrinthExportFile(cfg, input, rel);
+                    if (mod != null) { filesIndex.add(mod); continue; }
+                } else {
+                    Map<String,Object> mod = curseForgeExportFile(instance, input, rel);
+                    if (mod != null) { cfFiles.add(mod); continue; }
+                }
+                if (!options.bundleUnmatched) { unresolved.add(rel); continue; }
+                log.log("Bundling unmatched mod under overrides: " + rel);
+            }
+            overrides.add(input);
+        }
+        if (!unresolved.isEmpty())
+            throw new IOException(unresolved.size() + " selected mod(s) have no verified " +
+                (options.format.equals("modrinth") ? "Modrinth download URL" : "CurseForge project/file ID") +
+                ". Deselect them or enable 'Bundle unmatched jars in overrides' (if redistribution is permitted). First: " +
+                String.join(", ", unresolved.subList(0, Math.min(4, unresolved.size()))));
+        Map<String,Object> manifest = new LinkedHashMap<>();
+        if (options.format.equals("modrinth")) {
+            Map<String,Object> deps = new LinkedHashMap<>();
+            deps.put("minecraft", mc);
+            deps.put(switch (loader) { case "fabric" -> "fabric-loader"; case "quilt" -> "quilt-loader"; default -> loader; },
+                options.loaderVersion.trim());
+            manifest.put("formatVersion", 1);
+            manifest.put("game", "minecraft");
+            manifest.put("versionId", options.version.trim());
+            manifest.put("name", options.name.trim());
+            manifest.put("files", filesIndex);
+            manifest.put("dependencies", deps);
+        } else {
+            manifest.put("minecraft", Map.of("version", mc,
+                "modLoaders", List.of(Map.of("id", loader + "-" + options.loaderVersion.trim(), "primary", true))));
+            manifest.put("manifestType", "minecraftModpack");
+            manifest.put("manifestVersion", 1);
+            manifest.put("name", options.name.trim());
+            manifest.put("version", options.version.trim());
+            manifest.put("author", options.author == null ? "" : options.author.trim());
+            manifest.put("files", cfFiles);
+            manifest.put("overrides", "overrides");
+        }
+        Path target = destination.toAbsolutePath().normalize();
+        Files.createDirectories(target.getParent());
+        Path temporary = Files.createTempFile(target.getParent(), "skylauncher-export-", ".part");
+        boolean completed = false;
+        try {
+            try (ZipOutputStream archive = new ZipOutputStream(Files.newOutputStream(temporary), StandardCharsets.UTF_8)) {
+                zipString(archive, options.format.equals("modrinth") ? "modrinth.index.json" : "manifest.json",
+                    Json.write(manifest));
+                for (Path file : overrides) zipPath(archive, file, "overrides/" + exportPath(game, file));
+            }
+            try { Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE); }
+            catch (AtomicMoveNotSupportedException e) {
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+            completed = true;
+            log.log("Exported " + selected.size() + " selected file(s) (" +
+                (options.format.equals("modrinth") ? filesIndex.size() : cfFiles.size()) +
+                " linked mods, " + overrides.size() + " override files): " + target);
+        } finally { if (!completed) Files.deleteIfExists(temporary); }
+    }
+    void showExportDialog() {
+        saveSettings();
+        Map<String,Object> selectedInstance = inst();
+        Path directory = gameDir(selectedInstance);
+        List<Path> candidates;
+        try { candidates = exportableFiles(directory); }
+        catch (IOException e) { JOptionPane.showMessageDialog(frame, e.getMessage(), "Export", JOptionPane.ERROR_MESSAGE); return; }
+        JTextField packName = new JTextField(s(selectedInstance.getOrDefault("pack_name", active())), 24);
+        if (packName.getText().isBlank()) packName.setText(active());
+        JTextField packVersion = new JTextField("1.0.0", 12);
+        JTextField author = new JTextField("Fathom Studios", 16);
+        JTextField loaderVersion = new JTextField(exportLoaderVersion(selectedInstance), 16);
+        JComboBox<String> format = new JComboBox<>(new String[]{"Modrinth (.mrpack)", "CurseForge (.zip)"});
+        JCheckBox unmatched = new JCheckBox("Bundle unmatched mod jars in overrides (only if redistribution is allowed)");
+        unmatched.setOpaque(false);
+        DefaultTableModel files = new DefaultTableModel(new Object[]{"Include", "Instance file", "Size (KiB)"}, 0) {
+            @Override public Class<?> getColumnClass(int column) { return column == 0 ? Boolean.class : column == 2 ? Long.class : String.class; }
+            @Override public boolean isCellEditable(int row, int column) { return column == 0; }
+        };
+        for (Path path : candidates) {
+            String name;
+            try { name = exportPath(directory, path); }
+            catch (IOException e) { continue; }
+            try { files.addRow(new Object[]{defaultExportSelection(name), name,
+                (Files.size(path) + 1023) / 1024}); } catch (IOException ignored) { }
+        }
+        JTable fileTable = new JTable(files);
+        fileTable.setRowHeight(24);
+        fileTable.setAutoCreateRowSorter(true);
+        fileTable.getColumnModel().getColumn(0).setMaxWidth(68);
+        fileTable.getColumnModel().getColumn(2).setMaxWidth(115);
+        JScrollPane fileScroll = new JScrollPane(fileTable);
+        fileScroll.setPreferredSize(new Dimension(780, 315));
+        JPanel inputs = new JPanel(new GridLayout(0, 2, 10, 5));
+        inputs.add(new JLabel("Format")); inputs.add(format);
+        inputs.add(new JLabel("Pack name")); inputs.add(packName);
+        inputs.add(new JLabel("Pack version")); inputs.add(packVersion);
+        inputs.add(new JLabel("Author")); inputs.add(author);
+        inputs.add(new JLabel("Loader version (required)")); inputs.add(loaderVersion);
+        JPanel switches = new JPanel(new FlowLayout(FlowLayout.LEFT, 7, 3));
+        JButton defaults = new JButton("Pack defaults"), all = new JButton("Select all"), none = new JButton("Select none");
+        defaults.addActionListener(e -> { for (int row = 0; row < files.getRowCount(); row++)
+            files.setValueAt(defaultExportSelection(s(files.getValueAt(row, 1))), row, 0); });
+        all.addActionListener(e -> { for (int row = 0; row < files.getRowCount(); row++) files.setValueAt(true, row, 0); });
+        none.addActionListener(e -> { for (int row = 0; row < files.getRowCount(); row++) files.setValueAt(false, row, 0); });
+        switches.add(defaults); switches.add(all); switches.add(none);
+        JPanel contents = new JPanel(new BorderLayout(8, 8));
+        contents.add(inputs, BorderLayout.NORTH);
+        JPanel center = new JPanel(new BorderLayout(5, 5));
+        center.add(new JLabel("Choose individual files. Saves and personal files are not selected by default."), BorderLayout.NORTH);
+        center.add(fileScroll, BorderLayout.CENTER);
+        center.add(switches, BorderLayout.SOUTH);
+        contents.add(center, BorderLayout.CENTER);
+        contents.add(unmatched, BorderLayout.SOUTH);
+        int choice = JOptionPane.showConfirmDialog(frame, contents, "Export modpack — " + active(),
+            JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (choice != JOptionPane.OK_OPTION) return;
+        ExportOptions opt = new ExportOptions();
+        opt.format = format.getSelectedIndex() == 0 ? "modrinth" : "curseforge";
+        opt.name = packName.getText().trim();
+        opt.version = packVersion.getText().trim();
+        opt.author = author.getText().trim();
+        opt.loaderVersion = loaderVersion.getText().trim();
+        opt.bundleUnmatched = unmatched.isSelected();
+        for (int row = 0; row < files.getRowCount(); row++)
+            if (Boolean.TRUE.equals(files.getValueAt(row, 0))) {
+                try { opt.files.add(safeJoin(directory, s(files.getValueAt(row, 1)))); }
+                catch (IOException e) { JOptionPane.showMessageDialog(frame, e.getMessage()); return; }
+            }
+        if (opt.files.isEmpty()) {
+            if (JOptionPane.showConfirmDialog(frame, "No files selected. Export a metadata-only pack?",
+                    "Empty export", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
+        }
+        JFileChooser chooser = new JFileChooser();
+        String ext = opt.format.equals("modrinth") ? ".mrpack" : ".zip";
+        String baseName = opt.name.replaceAll("[^a-zA-Z0-9._-]+", "-");
+        chooser.setSelectedFile(new File((baseName.isBlank() ? "modpack" : baseName) + "-" +
+            opt.version.replaceAll("[^a-zA-Z0-9._-]+", "-") + ext));
+        if (chooser.showSaveDialog(frame) != JFileChooser.APPROVE_OPTION) return;
+        Path destination = chooser.getSelectedFile().toPath();
+        if (!destination.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(ext))
+            destination = destination.resolveSibling(destination.getFileName() + ext);
+        if (Files.exists(destination) &&
+            JOptionPane.showConfirmDialog(frame, "Replace existing file?\n" + destination, "Export",
+                JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
+        final Path outputFile = destination;
+        async("Export modpack", () -> {
+            exportModpack(cfg, selectedInstance, outputFile, opt, this::log);
+            SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(frame, "Export completed:\n" + outputFile,
+                "Modpack exported", JOptionPane.INFORMATION_MESSAGE));
+        });
+    }
+
     // ============================================================ local mod imports
     static final long LOCAL_JAR_MAX_BYTES = 256L * 1024 * 1024;
     static final long LOCAL_IMPORT_MAX_BYTES = 1024L * 1024 * 1024;
