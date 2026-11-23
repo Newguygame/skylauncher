@@ -1750,6 +1750,7 @@ public class SkyLauncher {
     // ============================================================ the app (Swing)
     final Map<String, Object> cfg = loadConfig();
     final AtomicBoolean busy = new AtomicBoolean();
+    final ThreadLocal<List<String>> missingModsThisTask = ThreadLocal.withInitial(ArrayList::new);
     static boolean PREVIEW_MODE = false;
     volatile Process game;
     boolean loading;
@@ -1863,7 +1864,16 @@ public class SkyLauncher {
         Thread t = new Thread(() -> {
             try { r.run(); } catch (HttpErr e) { log(what + " ERROR: " + e.getMessage() + (e.code == 401 || e.code == 403 || e.code == 404 ? " (private repo? set a token)" : "")); }
             catch (Exception e) { notifyUser(what + " failed: " + e.getMessage()); }
-            finally { setBusy(false); SwingUtilities.invokeLater(this::refreshAll); }
+            finally {
+                List<String> unresolved = new ArrayList<>(missingModsThisTask.get());
+                missingModsThisTask.remove();
+                if (!unresolved.isEmpty()) {
+                    log("Missing mods after both CurseForge and Modrinth (" + unresolved.size() +
+                        "): " + String.join("; ", unresolved));
+                    showMissingModsAtEnd(what, unresolved);
+                }
+                setBusy(false); SwingUtilities.invokeLater(this::refreshAll);
+            }
         }); t.setDaemon(true); t.start();
     }
     interface ThrowingRun { void run() throws Exception; }
@@ -3688,14 +3698,82 @@ public class SkyLauncher {
         info.put("ids", meta.get("ids")); info.put("loaders", meta.get("loaders")); info.put("auto", false); saveConfig(cfg); log("[" + fname + "] installed " + fname);
     }
 
+
+    boolean attemptCurseForgeModFallback(String key, String displayName,
+            Map<String,Object> targetInstance, boolean auto, String parent, String reason) {
+        String cfId = key.substring("curseforge:".length());
+        try {
+            Map<String,Object> cfIdentity;
+            try { cfIdentity = m(cf(cfg, "/v1/mods/" + cfId + "/identity")); }
+            catch (IOException olderRelay) { cfIdentity = m(cf(cfg, "/v1/mods/" + cfId)); }
+            String mc = s(targetInstance.get("mc_version")), loader = s(targetInstance.get("loader"));
+            Map<String,Object> replacement = findModrinthReplacement(cfg, cfIdentity, cfId, mc, loader);
+            if (replacement == null) throw new IOException("no verified " + mc + "/" + loader + " Modrinth release");
+            Path dir = Paths.get(s(targetInstance.get("mods_dir")));
+            Files.createDirectories(dir);
+            String fileName = s(replacement.get("name"));
+            Path destination = safeJoin(dir, fileName);
+            if (Files.isRegularFile(destination)) {
+                if (!fileDigest("SHA-1", destination).equalsIgnoreCase(s(replacement.get("sha1"))))
+                    throw new IOException("another file already uses " + fileName);
+            } else downloadModrinthReplacement(replacement, destination);
+            Map<String,Object> meta = readMeta(destination);
+            List<Object> loaders = l(meta.get("loaders"));
+            if (!loaders.isEmpty() && !loaders.contains(loader) &&
+                    !(loader.equals("quilt") && loaders.contains("fabric"))) {
+                Files.deleteIfExists(destination);
+                throw new IOException("replacement jar metadata does not match loader " + loader);
+            }
+            String modrinthKey = "modrinth:" + replacement.get("project_id");
+            Map<String,Object> mods = m(targetInstance.get("mods"));
+            Map<String,Object> info = m(mods.computeIfAbsent(modrinthKey,
+                ignored -> new LinkedHashMap<String,Object>()));
+            info.put("name", replacement.get("project")); info.put("tag", replacement.get("version"));
+            info.put("version_id", replacement.get("version_id"));
+            info.put("file", fileName); info.put("sha256", fileDigest("SHA-256", destination));
+            info.put("ids", meta.get("ids")); info.put("loaders", meta.get("loaders"));
+            info.put("auto", auto); info.put("replaces_curseforge", cfId);
+            if (parent != null) {
+                List<Object> requiredBy = new ArrayList<>(l(info.get("required_by")));
+                if (!requiredBy.contains(parent)) requiredBy.add(parent);
+                info.put("required_by", requiredBy);
+            }
+            mods.remove(key); // the independent Modrinth project owns future update checks
+            saveConfig(cfg);
+            log("[" + displayName + "] unavailable from CurseForge (" + reason + "); " +
+                "installed verified Modrinth " + replacement.get("project") + " " + replacement.get("version"));
+            return true;
+        } catch (Exception failure) {
+            String description = displayName + " (CurseForge " + cfId + ") — " + failure.getMessage();
+            missingModsThisTask.get().add(description);
+            log("[" + displayName + "] unavailable from CurseForge / Modrinth: " + failure.getMessage());
+            return false;
+        }
+    }
+
     /** GitHub or Modrinth install of one mod (+ dependencies). vid pins a version (tag / Modrinth version id). */
     void installMod(String key, String label, Map<String, Object> inst, boolean auto, String parent, Set<String> seen, String vid, String expectId) throws Exception {
         String src = modSource(key), loader = s(inst.get("loader")); Path dir = Paths.get(s(inst.get("mods_dir")));
         if (src.equals("url")) { installUrl(key, s(m(m(inst.get("mods")).get(key)).get("url")), inst); return; }
         log("[" + label + "] checking " + src + " (" + loader + " " + (s(inst.get("mc_version")).isEmpty() ? "any MC" : inst.get("mc_version")) + ")...");
-        List<Map<String, Object>> versions = listVersions(key, inst, cfg); Map<String, Object> v = null;
+        List<Map<String, Object>> versions;
+        try { versions = listVersions(key, inst, cfg); }
+        catch (IOException unavailable) {
+            if (src.equals("curseforge")) {
+                attemptCurseForgeModFallback(key, label, inst, auto, parent, unavailable.getMessage());
+                return;
+            }
+            throw unavailable;
+        }
+        Map<String, Object> v = null;
         if (vid != null) { for (var x : versions) if (s(x.get("id")).equals(vid)) v = x; } else v = pickLatest(versions);
-        if (v == null) { log("[" + label + "] no version with a jar for " + loader + " " + inst.get("mc_version")); return; }
+        if (v == null) {
+            if (src.equals("curseforge")) {
+                attemptCurseForgeModFallback(key, label, inst, auto, parent, "no compatible CurseForge release");
+                return;
+            }
+            log("[" + label + "] no version with a jar for " + loader + " " + inst.get("mc_version")); return;
+        }
         Files.createDirectories(dir);
         // resolve file + expected hash
         String url, fname, sha1 = null, sha512 = null, sha256 = null, tag = s(v.get("label")), versionId = s(v.get("id")); Map<String, String> dlHeaders = null;
@@ -3714,7 +3792,16 @@ public class SkyLauncher {
             log("[" + label + "] up to date (" + tag + ")"); sha = s(old.get("sha256")); meta = readMeta(dest);
         } else {
             log("[" + label + "] downloading " + fname + " (" + tag + ")");
-            byte[] data = bytes(url, dlHeaders); sha = digest("SHA-256", data);
+            byte[] data;
+            try { data = bytes(url, dlHeaders); }
+            catch (IOException unavailable) {
+                if (src.equals("curseforge")) {
+                    attemptCurseForgeModFallback(key, label, inst, auto, parent, unavailable.getMessage());
+                    return;
+                }
+                throw unavailable;
+            }
+            sha = digest("SHA-256", data);
             if (sha1 != null && !digest("SHA-1", data).equalsIgnoreCase(sha1)) { log("[" + label + "] HASH MISMATCH (sha1) - rejected"); return; }
             if (sha1 == null && sha512 != null && !digest("SHA-512", data).equalsIgnoreCase(sha512)) { log("[" + label + "] HASH MISMATCH (sha512) - rejected"); return; }
             if (sha256 != null && !sha256.equals(sha)) { log("[" + label + "] HASH MISMATCH (sha256) - rejected"); return; }
@@ -3742,7 +3829,10 @@ public class SkyLauncher {
             Map<String, Object> have = m(m(inst.get("mods")).get(k2));
             if (!have.isEmpty() && Files.exists(dir.resolve(s(have.get("file"))))) continue;
             String nm;
-            if (cfDep) nm = s(m(cf(cfg,"/v1/mods/"+enc(k2.substring(11)))).get("name"));
+            if (cfDep) {
+                try { nm = s(m(cf(cfg,"/v1/mods/"+enc(k2.substring(11))+"/identity")).get("name")); }
+                catch (IOException e) { nm = k2; }
+            }
             else nm = s(m(mr(cfg,"/project/"+enc(s(d)))).get("title"));
             log("[" + label + "] requires " + nm);
             try { installMod(k2,nm,inst,true,key,seen,null,null); }
