@@ -35,7 +35,7 @@ jobs:
       - name: Upload verified Windows EXE
         uses: actions/upload-artifact@v4
         with:
-          name: SkyLauncher-Windows-3.1.8-latest
-          path: dist/SkyLauncher-3.1.8.exe
+          name: SkyLauncher-Windows-3.1.9-latest
+          path: dist/SkyLauncher-3.1.9.exe
           if-no-files-found: error
           retention-days: 14

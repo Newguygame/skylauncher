@@ -92,7 +92,7 @@ jobs:
         run: |
           icon_arg=()
           if [[ -f 'icons/SkyLauncher.${{ matrix.icon }}' ]]; then icon_arg=(--icon 'icons/SkyLauncher.${{ matrix.icon }}'); fi
-          jpackage --type '${{ matrix.package }}' --name '${{ matrix.name }}' --app-version 3.1.8 \
+          jpackage --type '${{ matrix.package }}' --name '${{ matrix.name }}' --app-version 3.1.9 \
             --input input --main-jar SkyLauncher.jar --main-class SkyLauncher \
             --dest dist --vendor SkyLauncher "${icon_arg[@]}" \
             --description 'SkyLauncher native installer - application and Java bundled locally'
@@ -167,41 +167,9 @@ jobs:
           name: SkyLauncher-Portable-Linux-${{ matrix.arch }}
           path: dist/*.tar.gz
           if-no-files-found: error
-  publish-portable:
-    # Make the verified JAR available without waiting for third-party Mac runners.
-    # This GITHUB_TOKEN push would not trigger another workflow from a new tag,
-    # so the current main-branch workflow publishes the release directly.
-    if: github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'Release SkyLauncher 3.1.8')
-    needs: verify
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-      - name: Package and test portable JAR
-        shell: bash
-        run: |
-          mkdir -p build/portable-release
-          javac --release 17 -encoding UTF-8 -d build/portable-release src/SkyLauncher.java
-          bash scripts/copy_assets.sh build/portable-release
-          jar --create --file SkyLauncher.jar --main-class SkyLauncher -C build/portable-release .
-          java -jar SkyLauncher.jar --selftest
-      - name: Publish verified portable JAR
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: v3.1.8
-        shell: bash
-        run: |
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --target "$GITHUB_SHA" --title 'SkyLauncher 3.1.8' --notes 'SkyLauncher 3.1.8 adds importing local mod JARs and ZIPs into the selected profile. In-place updates remain supported. Windows/macOS/Linux packages and portable Java builds are published after verification. Minecraft worlds, packs and settings are preserved.'
-          fi
-          gh release upload "$TAG" SkyLauncher.jar --clobber
   publish:
-    if: always() && (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'Release SkyLauncher 3.1.8'))) && needs.build.result == 'success' && needs.linux-portable.result == 'success'
-    needs: [build, linux-portable, publish-portable]
+    if: always() && (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'Release SkyLauncher 3.1.9'))) && needs.build.result == 'success' && needs.linux-portable.result == 'success'
+    needs: [build, linux-portable]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -228,8 +196,18 @@ jobs:
           from zipfile import ZipFile
           assets = Path('release-assets')
           names = {p.name for p in assets.iterdir()}
-          expected = {'SkyLauncher-3.1.8.exe', 'SkyLauncher-Universal-macOS-Installer.zip',
-                      'SkyLauncher-Universal-Linux-Installer.zip', 'SkyLauncher.jar'}
+          expected = {
+              'SkyLauncher-3.1.9.exe',
+              'SkyLauncher-3.1.9-intel.dmg',
+              'SkyLauncher-3.1.9-arm64.dmg',
+              'skylauncher_3.1.9_amd64.deb',
+              'SkyLauncher-Linux-Portable-x86_64.tar.gz',
+              'SkyLauncher-Linux-Portable-arm64.tar.gz',
+              'SkyLauncher-Linux-Portable-Java-Required.tar.gz',
+              'SkyLauncher-Universal-macOS-Installer.zip',
+              'SkyLauncher-Universal-Linux-Installer.zip',
+              'SkyLauncher.jar',
+          }
           if not expected.issubset(names): raise SystemExit(f'Missing release assets: {expected - names}')
           for name in ['SkyLauncher-Universal-macOS-Installer.zip', 'SkyLauncher-Universal-Linux-Installer.zip']:
               with ZipFile(assets / name) as z:
@@ -238,14 +216,23 @@ jobs:
                   if 'n|N|no|NO|No) return 1' not in code:
                       raise SystemExit(f'Universal installer does not default to Yes: {name}')
           PY
-      - name: Publish installers and JAR to GitHub Releases
+      - name: Publish verified desktop builds together
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v3.1.8' }}
+          TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v3.1.9' }}
         shell: bash
         run: |
+          set -euo pipefail
+          if [[ "$TAG" != "v3.1.9" ]]; then
+            echo "::error::Ref does not match this release version: $TAG"
+            exit 1
+          fi
+          # Draft until all platform assets are uploaded.
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --target "$GITHUB_SHA" --title "SkyLauncher 3.1.8" --notes "SkyLauncher 3.1.8: import local JAR mods and ZIPs safely into selected profiles, plus the existing visual home screen, modpack management, CurseForge/Modrinth integration, and automatic verified updates. Java is bundled in native Windows/macOS/Linux installers; a portable JAR is also included. API keys remain on the VPS."
+            gh release create "$TAG" --target "$GITHUB_SHA" --draft \
+              --title "SkyLauncher 3.1.9" \
+              --notes "SkyLauncher 3.1.9: export Modrinth .mrpack and CurseForge ZIP files with selected contents; consistent launcher-wide Terminal/Visual themes and wallpapers; independently available Modrinth fallback for restricted CurseForge mods and one final missing-mods summary. Includes Windows x64, macOS Intel/Apple Silicon and Linux downloads, plus portable Java. Existing Minecraft profiles and settings remain intact."
           fi
           gh release upload "$TAG" release-assets/* --clobber
+          gh release edit "$TAG" --draft=false

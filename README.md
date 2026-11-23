@@ -75,8 +75,8 @@ from GitHub Actions.
 
 ### Publishing
 
-The build workflow publishes `v3.1.8` only for a push to `main` with commit title beginning
-`Release SkyLauncher 3.1.8`, or on a `v*` tag push. The release job waits for platform builds
+The build workflow publishes `v3.1.9` only for a push to `main` with commit title beginning
+`Release SkyLauncher 3.1.9`, or on the corresponding version tag. The release job waits for platform builds
 and tests to pass. This is the requested exception to the no-version-bump policy.
 
 
@@ -109,7 +109,7 @@ location may require moving it into `~/Applications`.
 - Java desktop edition only; the Python edition is unchanged.
 - The launcher continues checking signed-in user's configured official GitHub Releases source on startup and only offers verified platform assets with SHA-256 digests. Minecraft data remains in `~/.ghmodlauncher`.
 
-## Unreleased: modpack export and unified themes
+## SkyLauncher 3.1.9: modpack export and unified themes
 
 In the Java launcher, open **Packs → Export Modpack**, **Instances → Export Instance**, or
 **Tools & Logs → Mods → Export modpack**. Choose **Modrinth (.mrpack)** or
@@ -148,4 +148,4 @@ restricted projects may still appear as missing. The bridge **never** proxies
 blocked CurseForge mod bytes or exposes the API key, and SkyLauncher does not
 assume that a similarly named Modrinth project is the same mod.
 
-No launcher version bump or new release is included in this work.
+These changes are included in the SkyLauncher 3.1.9 desktop release. The experimental Android app is built separately and does not receive the Java Swing desktop changes.
