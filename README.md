@@ -143,8 +143,7 @@ mods use this fallback. Missing mods are collected and reported **once at the
 end** of an installation/update operation.
 
 The metadata-only lookup requires deploying the new
-`bridge/server.py` version to the CurseForge VPS (new
-`GET /v1/mods/<project-id>/identity` endpoint). Until the bridge is updated,
+`bridge/server.py` version to the CurseForge VPS (`GET /v1/mods/<project-id>` now safely returns public identity metadata). Until the bridge is updated,
 restricted projects may still appear as missing. The bridge **never** proxies
 blocked CurseForge mod bytes or exposes the API key, and SkyLauncher does not
 assume that a similarly named Modrinth project is the same mod.
