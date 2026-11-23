@@ -1196,6 +1196,7 @@ public class SkyLauncher {
                 if (size > 128L * 1024 * 1024) throw new IOException("Modrinth file exceeds 128 MiB");
                 output.write(buf, 0, len);
             }
+            output.flush();
             if (!fileDigest("SHA-1", temporary).equalsIgnoreCase(sha1))
                 throw new IOException("Modrinth replacement failed SHA-1 verification");
             Files.move(temporary, destination, StandardCopyOption.REPLACE_EXISTING);
@@ -1273,7 +1274,9 @@ public class SkyLauncher {
                         log.log("CurseForge cannot deliver " + filename + " (" + unavailable.getMessage() +
                             "); checking official Modrinth releases...");
                         try {
-                            Map<String,Object> projectInfo = m(cf(cfg, "/v1/mods/" + modId));
+                            Map<String,Object> projectInfo;
+                            try { projectInfo = m(cf(cfg, "/v1/mods/" + modId + "/identity")); }
+                            catch (IOException olderRelay) { projectInfo = m(cf(cfg, "/v1/mods/" + modId)); }
                             String projectName = s(projectInfo.get("name"));
                             if (!projectName.isBlank()) filename = projectName + " [CF " + modId + "/" + modFileId + "]";
                             Map<String,Object> modrinth = findModrinthReplacement(cfg, projectInfo, modId, mc, loader);
