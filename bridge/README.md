@@ -49,3 +49,9 @@ Optional `config.json` settings (environment variables take precedence):
 ```
 
 Allowed ranges: 1–1,200 requests/min/IP; 1–10,000 downloads/hour/IP; 1–16 simultaneous downloads globally. These are public-bridge safeguards, **not** extra CurseForge API allowances. Larger values can cost significant traffic and cause CurseForge 429 rate limiting. Keep the concurrency small if VPS bandwidth is limited. Restart Pelican after editing the configuration.
+
+## CurseForge metadata for Modrinth fallback
+
+The public `GET /v1/mods/{projectID}` endpoint now exposes **name/slug metadata** even when the author disables third-party file downloads. It does **not** expose blocked JAR files: `GET /v1/download/{projectID}/{fileID}`, file metadata and ZIP downloads still enforce the CurseForge distribution setting.
+
+Server Studio uses the title/slug to find an independently available Modrinth release for the same Minecraft and modloader versions. Install the updated `bridge/server.py` on the existing VPS/Pelican service, keeping your current private `config.json`, certificates and private key, then restart the relay. A GitHub source update by itself does not update your running VPS.
