@@ -1174,6 +1174,7 @@ public class SkyLauncher {
                     answer.put("sha1", hashes.get("sha1"));
                     answer.put("project", s(candidate.get("title")));
                     answer.put("version", s(v.get("version_number")));
+                    answer.put("version_id", s(v.get("id")));
                     answer.put("project_id", s(candidate.get("id")));
                     return answer;
                 }
@@ -2600,8 +2601,8 @@ public class SkyLauncher {
                     ()->openVisualUrl("https://skylauncher.fathomstudios.org"),
                     ()->showVisualPage("Home")})),"News");
         screenRoot.add(visualPage("PACKS", "Manage modpacks and installed mods",
-            actionsGrid(new String[]{"Mod Manager", "Import mod JARs / ZIPs", "Install Fathom Pack", "Install Pack from Link", "Check All Pack Updates", "Search Modpacks", "Check Active Pack"},
-                new Runnable[]{()->showWorkspace(0),this::chooseLocalMods,this::installFathom,this::installPackDialog,this::checkAllPackUpdates,this::searchModpacks,this::checkPackUpdate})),"Packs");
+            actionsGrid(new String[]{"Mod Manager", "Import mod JARs / ZIPs", "Install Fathom Pack", "Install Pack from Link", "Check All Pack Updates", "Search Modpacks", "Check Active Pack", "Export Modpack"},
+                new Runnable[]{()->showWorkspace(0),this::chooseLocalMods,this::installFathom,this::installPackDialog,this::checkAllPackUpdates,this::searchModpacks,this::checkPackUpdate,this::showExportDialog})),"Packs");
 
         JPanel instanceContent=new JPanel();instanceContent.setOpaque(false);
         instanceContent.setLayout(new BoxLayout(instanceContent,BoxLayout.Y_AXIS));
@@ -2617,8 +2618,8 @@ public class SkyLauncher {
         instanceContent.add(visualText("Choose active Minecraft instance",15,true));
         instanceContent.add(Box.createVerticalStrut(12));instanceContent.add(visualInstanceBox);
         instanceContent.add(Box.createVerticalStrut(20));
-        instanceContent.add(actionsGrid(new String[]{"New Instance", "Delete Instance", "Open Instance Folder", "Instance Settings"},
-            new Runnable[]{this::newInstance,this::deleteInstance,this::openFolder,()->showWorkspace(1)}));
+        instanceContent.add(actionsGrid(new String[]{"New Instance", "Delete Instance", "Open Instance Folder", "Instance Settings", "Export Instance"},
+            new Runnable[]{this::newInstance,this::deleteInstance,this::openFolder,()->showWorkspace(1),this::showExportDialog}));
         screenRoot.add(visualPage("INSTANCES", "Create and manage separate Minecraft profiles",instanceContent),"Instances");
 
         screenRoot.add(visualPage("SKIN", "Manage your Minecraft character skin",
@@ -3044,6 +3045,7 @@ public class SkyLauncher {
         packActions.add(btn("Update all packs", this::checkAllPackUpdates));
         packActions.add(btn("Search modpacks", this::searchModpacks));
         packActions.add(btn("Reinstall modpack",this::reinstallPack));
+        packActions.add(actionButton("Export modpack", this::showExportDialog, ACCENT));
         packActions.setAlignmentX(Component.LEFT_ALIGNMENT); packBody.add(packActions);
         packCard.add(packBody,BorderLayout.CENTER);
         content.add(packCard); content.add(Box.createVerticalStrut(12));
