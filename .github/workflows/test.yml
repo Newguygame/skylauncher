@@ -74,6 +74,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Test CurseForge relay metadata isolation and public download routes
+        run: python3 bridge/test_public_bridge.py
       - name: JavaScript syntax and mocked GitHub release tests
         run: |
           node --check docs/app.js

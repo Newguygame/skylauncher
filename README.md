@@ -108,3 +108,44 @@ location may require moving it into `~/Applications`.
 - Avoid overwriting SkyLauncher-managed mods, skip duplicates by default, and show an import summary.
 - Java desktop edition only; the Python edition is unchanged.
 - The launcher continues checking signed-in user's configured official GitHub Releases source on startup and only offers verified platform assets with SHA-256 digests. Minecraft data remains in `~/.ghmodlauncher`.
+
+## Unreleased: modpack export and unified themes
+
+In the Java launcher, open **Packs → Export Modpack**, **Instances → Export Instance**, or
+**Tools & Logs → Mods → Export modpack**. Choose **Modrinth (.mrpack)** or
+**CurseForge (.zip)**, the pack name/version, and exactly which files to include.
+The **Pack defaults / Select all / Select none** controls make selection easier.
+World saves, logs and other personal files are excluded by default. The exporter
+never publishes the user's Microsoft account credentials or launcher secrets.
+
+The Modrinth exporter writes `modrinth.index.json` with verified CDN downloads
+matched by the **local mod file's SHA-1 hash**, plus the selected files inside
+`overrides/`. The CurseForge exporter writes `manifest.json` with tracked
+project/file IDs for unmodified CurseForge jars, plus selected overrides. For
+either format, unknown mod jars are **not silently uploaded**. The optional
+"Bundle unmatched mod jars" checkbox should only be used when redistribution
+is permitted by the mod authors; otherwise the user receives a list of unresolved
+files and can deselect them. Export does not alter the installed profile.
+
+**Visual** and **Terminal** style now apply to all pages, not just the advanced
+workspace. The selected bundled wallpaper remains behind content in either
+style, and the active style persists across navigation and restarts.
+
+### Third-party-restricted CurseForge mods
+
+SkyLauncher first asks the user's configured HTTPS CurseForge relay for the
+required mod. If CurseForge does not permit third-party distribution, it asks
+for **project metadata only** and checks whether that same project has an
+independently published Modrinth release for the modpack's exact Minecraft
+version and loader. It verifies the Modrinth file hash before using the
+official download. Both complete CurseForge packs and individual CurseForge
+mods use this fallback. Missing mods are collected and reported **once at the
+end** of an installation/update operation.
+
+The metadata-only lookup requires deploying the new
+`bridge/server.py` version to the CurseForge VPS (`GET /v1/mods/<project-id>` now safely returns public identity metadata). Until the bridge is updated,
+restricted projects may still appear as missing. The bridge **never** proxies
+blocked CurseForge mod bytes or exposes the API key, and SkyLauncher does not
+assume that a similarly named Modrinth project is the same mod.
+
+No launcher version bump or new release is included in this work.
