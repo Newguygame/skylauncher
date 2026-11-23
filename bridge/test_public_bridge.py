@@ -7,6 +7,7 @@ class FakeCF:
     def search(self, query, version='', loader='', slug='', kind='mod'):
         return [{'id':101,'name':'Test mod','slug':'test-mod','summary':'','downloads':5, 'version':version,'loader':loader}]
     def get_mod(self, mid, kind='mod'):return {'id':mid,'name':'Test mod','slug':'test-mod'}
+    def identity(self, mid):return {'id':mid,'name':'Test mod','slug':'test-mod'}
     def files(self, mid, version, loader, kind='mod'):return [{'id':202,'name':'test.jar'}]
     def file_info(self,mid,fid):return {'id':fid,'modId':mid,'fileName':'test.jar','hashes':[]}
     def download(self,mid,fid):return io.BytesIO(b'jar bytes'), {'fileName':'test.jar'}
@@ -25,6 +26,9 @@ class TestPublic(unittest.TestCase):
         info=json.loads(self.get('/health'));self.assertTrue(info['ok'])
         mods=json.loads(self.get('/v1/search?q=test&version=1.21.1&loader=neoforge'))['data']
         self.assertEqual(mods[0]['loader'],'neoforge')
+    def test_metadata_identity_without_download(self):
+        identity=json.loads(self.get('/v1/mods/101/identity'))
+        self.assertEqual(identity, {'id':101,'name':'Test mod','slug':'test-mod'})
     def test_file_download(self):self.assertEqual(self.get('/v1/download/101/202'),b'jar bytes')
     def test_invalid_endpoint(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:self.get('/config.json')
