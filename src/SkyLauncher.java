@@ -1919,10 +1919,12 @@ public class SkyLauncher {
         cfg.put("ui_background_hex", customBackground == null ? "" : customBackground);
         cfg.put("ui_text_hex", customText == null ? "" : customText);
         saveConfig(cfg);
+        if (terminalStyleActive) applyTerminalPalette();
         applyPythonTheme();
         if (frame != null) {
             recolor(frame, old, new Color[]{BG, SURFACE, SURFACE2, FG, MUTED, ACCENT});
             SwingUtilities.updateComponentTreeUI(frame);
+            styleAllComponents(frame);
             frame.repaint();
         }
     }
@@ -1969,6 +1971,72 @@ public class SkyLauncher {
         UIManager.put("OptionPane.messageForeground", FG);
         UIManager.put("CheckBox.background", BG);
         UIManager.put("CheckBox.foreground", FG);
+    }
+
+    static void applyTerminalPalette() {
+        BG = new Color(0x08120d);
+        SURFACE = new Color(0x0b1c12);
+        SURFACE2 = new Color(0x183521);
+        FG = new Color(0xb6f6c8);
+        MUTED = new Color(0x82c597);
+        ACCENT = new Color(0x4deb85);
+        GREEN = new Color(0x62ff99);
+        RED = new Color(0xff7777);
+    }
+    // The style belongs to the entire launcher, not just its advanced workspace.
+    static void styleAllComponents(Component component) {
+        if (component instanceof JComponent widget) {
+            Font original = (Font) widget.getClientProperty("skylauncher.originalFont");
+            if (original == null && widget.getFont() != null) {
+                original = widget.getFont();
+                widget.putClientProperty("skylauncher.originalFont", original);
+            }
+            if (original != null) {
+                widget.setFont(TERMINAL_PALETTE
+                    ? new Font(Font.MONOSPACED, original.getStyle(), original.getSize())
+                    : original);
+            }
+            if (component instanceof JLabel label) {
+                Color previous = (Color) widget.getClientProperty("skylauncher.originalForeground");
+                if (previous == null) {
+                    previous = label.getForeground();
+                    widget.putClientProperty("skylauncher.originalForeground", previous);
+                }
+                if (TERMINAL_PALETTE) {
+                    label.setForeground(label.getFont().isBold() ? ACCENT : FG);
+                } else label.setForeground(previous);
+            }
+            if (component instanceof AbstractButton button) {
+                if (TERMINAL_PALETTE) button.setForeground(FG);
+                else if (button instanceof VisualAction) button.setForeground(Color.WHITE);
+            }
+            if (component instanceof JTextArea area && !area.isEditable()) {
+                area.setForeground(TERMINAL_PALETTE ? GREEN : GREEN);
+                area.setBackground(TERMINAL_PALETTE ? SURFACE : SURFACE);
+            }
+            widget.repaint();
+        }
+        if (component instanceof Container container)
+            for (Component child : container.getComponents()) styleAllComponents(child);
+    }
+    static volatile boolean TERMINAL_PALETTE = false;
+    void setInterfaceStyle(boolean terminal) {
+        terminalStyleActive = terminal;
+        TERMINAL_PALETTE = terminal;
+        VISUAL_GLASS = true; // wallpaper remains visible behind both visual and terminal panels
+        cfg.put("fathom_ui_style", terminal ? "terminal" : "visual");
+        saveConfig(cfg);
+        setShade(s(cfg.getOrDefault("ui_shade_preset", "Black")), s(cfg.get("ui_accent_hex")),
+            s(cfg.get("ui_background_hex")), s(cfg.get("ui_text_hex")));
+        if (terminal) applyTerminalPalette();
+        else { GREEN = new Color(0x2ee59a); RED = new Color(0xe85d5d); }
+        applyPythonTheme();
+        if (frame != null) {
+            SwingUtilities.updateComponentTreeUI(frame);
+            styleAllComponents(frame);
+            frame.revalidate();
+            frame.repaint();
+        }
     }
     // ============================================================ first-run desktop shortcut + bundled app icon
     static final String SHORTCUT_ASKED_KEY = "desktop_shortcut_asked";
@@ -2205,13 +2273,21 @@ public class SkyLauncher {
         @Override protected void paintComponent(Graphics g) {
             Graphics2D gg = (Graphics2D) g.create();
             gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            gg.setColor(new Color(SURFACE.getRed(), SURFACE.getGreen(), SURFACE.getBlue(), VISUAL_GLASS ? 64 : 235));
-            gg.fillRoundRect(0,0,getWidth()-1,getHeight()-1,arc,arc);
-            gg.setColor(new Color(0, 0, 0, 45));
-            gg.drawRoundRect(1,1,getWidth()-3,getHeight()-3,arc,arc);
+            if (TERMINAL_PALETTE) {
+                gg.setColor(new Color(2, 12, 5, 205));
+                gg.fillRect(0,0,getWidth()-1,getHeight()-1);
+                gg.setColor(new Color(77, 235, 133, 135));
+                gg.drawRect(0,0,getWidth()-1,getHeight()-1);
+            } else {
+                gg.setColor(new Color(SURFACE.getRed(), SURFACE.getGreen(), SURFACE.getBlue(), VISUAL_GLASS ? 64 : 235));
+                gg.fillRoundRect(0,0,getWidth()-1,getHeight()-1,arc,arc);
+                gg.setColor(new Color(0, 0, 0, 45));
+                gg.drawRoundRect(1,1,getWidth()-3,getHeight()-3,arc,arc);
+            }
             if (line) {
                 gg.setColor(new Color(outline().getRed(), outline().getGreen(), outline().getBlue(), 190));
-                gg.drawRoundRect(0,0,getWidth()-1,getHeight()-1,arc,arc);
+                if (TERMINAL_PALETTE) gg.drawRect(0,0,getWidth()-1,getHeight()-1);
+                else gg.drawRoundRect(0,0,getWidth()-1,getHeight()-1,arc,arc);
             }
             gg.dispose(); super.paintComponent(g);
         }
@@ -2235,12 +2311,20 @@ public class SkyLauncher {
             Graphics2D gg=(Graphics2D)g.create();
             gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON);
             Color shade = switch(role) {case "accent" -> ACCENT; case "danger" -> RED; case "play" -> GREEN; default -> SURFACE2;};
-            if (hover && isEnabled()) shade = shade.brighter();
-            if (!isEnabled()) shade=shade.darker();
-            gg.setColor(shade); gg.fillRoundRect(0,0,getWidth()-1,getHeight()-1,24,24);
-            gg.setColor(new Color(255,255,255,40)); gg.drawRoundRect(0,0,getWidth()-1,getHeight()-1,24,24);
+            if (TERMINAL_PALETTE) {
+                gg.setColor(new Color(4, 18, 10, hover ? 243 : 220));
+                gg.fillRect(0,0,getWidth()-1,getHeight()-1);
+                gg.setColor(role.equals("danger") ? RED : ACCENT);
+                gg.drawRect(0,0,getWidth()-1,getHeight()-1);
+                setForeground(role.equals("danger") ? RED : FG);
+            } else {
+                if (hover && isEnabled()) shade = shade.brighter();
+                if (!isEnabled()) shade=shade.darker();
+                gg.setColor(shade); gg.fillRoundRect(0,0,getWidth()-1,getHeight()-1,24,24);
+                gg.setColor(new Color(255,255,255,40)); gg.drawRoundRect(0,0,getWidth()-1,getHeight()-1,24,24);
+                setForeground(contrast(shade));
+            }
             gg.dispose();
-            setForeground(contrast(shade));
             super.paintComponent(g);
         }
     }
@@ -2255,7 +2339,7 @@ public class SkyLauncher {
             Graphics2D gg = (Graphics2D) g.create();
             gg.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
             gg.setColor(new Color(14,18,26)); gg.fillRect(0,0,getWidth(),getHeight());
-            if (terminalAware && terminalStyleActive) { gg.dispose(); return; }
+            // Both themes draw the selected wallpaper, including terminal workspaces.
             Image art = currentBackgroundImage();
             if (art != null) {
                 double scale = Math.max(getWidth() / (double) art.getWidth(null), getHeight() / (double) art.getHeight(null));
@@ -2263,7 +2347,8 @@ public class SkyLauncher {
                 int h = (int) Math.ceil(art.getHeight(null) * scale);
                 gg.drawImage(art, (getWidth()-w)/2, (getHeight()-h)/2, w, h, null);
             }
-            gg.setColor(new Color(10, 14, 20, 52)); gg.fillRect(0,0,getWidth(),getHeight());
+            gg.setColor(TERMINAL_PALETTE ? new Color(3, 12, 5, 82) : new Color(10, 14, 20, 52));
+            gg.fillRect(0,0,getWidth(),getHeight());
             gg.dispose();
         }
     }
@@ -2273,11 +2358,18 @@ public class SkyLauncher {
         @Override protected void paintTabBackground(Graphics g, int tabPlacement, int tabIndex, int x, int y, int w, int h, boolean isSelected) {
             Graphics2D gg=(Graphics2D)g.create(); gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON);
             Color base = isSelected ? new Color(SURFACE.getRed(), SURFACE.getGreen(), SURFACE.getBlue(), VISUAL_GLASS ? 64 : 225) : new Color(SURFACE2.getRed(), SURFACE2.getGreen(), SURFACE2.getBlue(), VISUAL_GLASS ? 48 : 170);
-            gg.setColor(base); gg.fillRoundRect(x+1, y+2, w-3, h-3, 20, 20); gg.dispose();
+            if (TERMINAL_PALETTE) {
+                gg.setColor(new Color(3, 18, 9, isSelected ? 224 : 196));
+                gg.fillRect(x+1, y+2, w-3, h-3);
+            } else { gg.setColor(base); gg.fillRoundRect(x+1, y+2, w-3, h-3, 20, 20); }
+            gg.dispose();
         }
         @Override protected void paintTabBorder(Graphics g, int tabPlacement, int tabIndex, int x, int y, int w, int h, boolean isSelected) {
             Graphics2D gg=(Graphics2D)g.create(); gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON);
-            gg.setColor(new Color(outline().getRed(), outline().getGreen(), outline().getBlue(), 180)); gg.drawRoundRect(x+1, y+2, w-3, h-3, 20, 20); gg.dispose();
+            gg.setColor(TERMINAL_PALETTE ? ACCENT : new Color(outline().getRed(), outline().getGreen(), outline().getBlue(), 180));
+            if (TERMINAL_PALETTE) gg.drawRect(x+1, y+2, w-3, h-3);
+            else gg.drawRoundRect(x+1, y+2, w-3, h-3, 20, 20);
+            gg.dispose();
         }
         @Override protected void paintFocusIndicator(Graphics g, int tabPlacement, Rectangle[] rects, int tabIndex, Rectangle iconRect, Rectangle textRect, boolean isSelected) { }
     }
@@ -2352,11 +2444,13 @@ public class SkyLauncher {
         @Override protected void paintComponent(Graphics g) {
             Graphics2D gg=(Graphics2D)g.create();
             gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING,RenderingHints.VALUE_ANTIALIAS_ON);
-            gg.setColor(new Color(9,17,29,64)); // 75% transparent
-            gg.fillRoundRect(0,0,getWidth()-1,getHeight()-1,radius,radius);
-            gg.setColor(new Color(255,255,255,70));
+            gg.setColor(TERMINAL_PALETTE ? new Color(1, 13, 6, 215) : new Color(9,17,29,64));
+            if (TERMINAL_PALETTE) gg.fillRect(0,0,getWidth()-1,getHeight()-1);
+            else gg.fillRoundRect(0,0,getWidth()-1,getHeight()-1,radius,radius);
+            gg.setColor(TERMINAL_PALETTE ? ACCENT : new Color(255,255,255,70));
             gg.setStroke(new BasicStroke(1.5f));
-            gg.drawRoundRect(1,1,getWidth()-3,getHeight()-3,radius,radius);
+            if (TERMINAL_PALETTE) gg.drawRect(1,1,getWidth()-3,getHeight()-3);
+            else gg.drawRoundRect(1,1,getWidth()-3,getHeight()-3,radius,radius);
             gg.dispose(); super.paintComponent(g);
         }
     }
@@ -2379,11 +2473,21 @@ public class SkyLauncher {
         @Override protected void paintComponent(Graphics g) {
             Graphics2D gg=(Graphics2D)g.create();
             gg.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            Color fill=primary ? new Color(255,190,96,hovering ? 255 : 240)
-                : new Color(10,21,37,hovering ? 225 : 185);
-            gg.setColor(fill); gg.fillRoundRect(1,1,getWidth()-2,getHeight()-2,24,24);
-            gg.setColor(new Color(255,255,255,primary ? 115 : 90));
-            gg.setStroke(new BasicStroke(1.4f)); gg.drawRoundRect(1,1,getWidth()-3,getHeight()-3,24,24);
+            if (TERMINAL_PALETTE) {
+                gg.setColor(new Color(1,18,9,hovering ? 240 : 205));
+                gg.fillRect(1,1,getWidth()-2,getHeight()-2);
+                gg.setColor(primary ? GREEN : ACCENT);
+                gg.setStroke(new BasicStroke(primary ? 2f : 1.4f));
+                gg.drawRect(1,1,getWidth()-3,getHeight()-3);
+                setForeground(primary ? GREEN : FG);
+            } else {
+                Color fill=primary ? new Color(255,190,96,hovering ? 255 : 240)
+                    : new Color(10,21,37,hovering ? 225 : 185);
+                gg.setColor(fill); gg.fillRoundRect(1,1,getWidth()-2,getHeight()-2,24,24);
+                gg.setColor(new Color(255,255,255,primary ? 115 : 90));
+                gg.setStroke(new BasicStroke(1.4f)); gg.drawRoundRect(1,1,getWidth()-3,getHeight()-3,24,24);
+                setForeground(primary ? new Color(24,18,20) : Color.WHITE);
+            }
             gg.dispose(); super.paintComponent(g);
         }
     }
@@ -2425,7 +2529,7 @@ public class SkyLauncher {
         page.add(center,BorderLayout.CENTER);
         JPanel footer=new JPanel(new FlowLayout(FlowLayout.CENTER,12,4));footer.setOpaque(false);
         footer.add(visualButton("Home",false,()->showVisualPage("Home")));
-        footer.add(visualButton("Tools & Logs",false,()->showWorkspace(0,false)));
+        footer.add(visualButton("Tools & Logs",false,()->showWorkspace(0)));
         page.add(footer,BorderLayout.SOUTH);
         return page;
     }
@@ -2485,7 +2589,7 @@ public class SkyLauncher {
 
         screenRoot.add(visualPage("SERVERS", "Launch Minecraft and join your multiplayer servers",
             actionsGrid(new String[]{"Play Minecraft", "Choose Instance", "Game Settings", "Open Game Folder"},
-                new Runnable[]{this::play,()->showVisualPage("Instances"),()->showWorkspace(1,false),this::openFolder})),"Servers");
+                new Runnable[]{this::play,()->showVisualPage("Instances"),()->showWorkspace(1),this::openFolder})),"Servers");
         screenRoot.add(visualPage("NEWS", "Minecraft and Fathom Studios",
             actionsGrid(new String[]{"Minecraft News", "Fathom Studios", "SkyLauncher Project", "Back Home"},
                 new Runnable[]{()->openVisualUrl("https://www.minecraft.net/en-us/articles"),
@@ -2494,7 +2598,7 @@ public class SkyLauncher {
                     ()->showVisualPage("Home")})),"News");
         screenRoot.add(visualPage("PACKS", "Manage modpacks and installed mods",
             actionsGrid(new String[]{"Mod Manager", "Import mod JARs / ZIPs", "Install Fathom Pack", "Install Pack from Link", "Check All Pack Updates", "Search Modpacks", "Check Active Pack"},
-                new Runnable[]{()->showWorkspace(0,false),this::chooseLocalMods,this::installFathom,this::installPackDialog,this::checkAllPackUpdates,this::searchModpacks,this::checkPackUpdate})),"Packs");
+                new Runnable[]{()->showWorkspace(0),this::chooseLocalMods,this::installFathom,this::installPackDialog,this::checkAllPackUpdates,this::searchModpacks,this::checkPackUpdate})),"Packs");
 
         JPanel instanceContent=new JPanel();instanceContent.setOpaque(false);
         instanceContent.setLayout(new BoxLayout(instanceContent,BoxLayout.Y_AXIS));
@@ -2511,7 +2615,7 @@ public class SkyLauncher {
         instanceContent.add(Box.createVerticalStrut(12));instanceContent.add(visualInstanceBox);
         instanceContent.add(Box.createVerticalStrut(20));
         instanceContent.add(actionsGrid(new String[]{"New Instance", "Delete Instance", "Open Instance Folder", "Instance Settings"},
-            new Runnable[]{this::newInstance,this::deleteInstance,this::openFolder,()->showWorkspace(1,false)}));
+            new Runnable[]{this::newInstance,this::deleteInstance,this::openFolder,()->showWorkspace(1)}));
         screenRoot.add(visualPage("INSTANCES", "Create and manage separate Minecraft profiles",instanceContent),"Instances");
 
         screenRoot.add(visualPage("SKIN", "Manage your Minecraft character skin",
@@ -2526,13 +2630,13 @@ public class SkyLauncher {
         settingsContent.add(Box.createVerticalStrut(9));
         settingsContent.add(actionsGrid(new String[]{"Generic Modpack Settings", "CurseForge VPS Bridge", "Minecraft Settings", "Manage Instances", "Mods & Logs", "Search Mods"},
             new Runnable[]{this::showGenericModpackSettings,this::showCurseForgeBridgeSettings,
-                ()->showWorkspace(1,false),()->showVisualPage("Instances"),
-                ()->showWorkspace(0,false),()->showWorkspace(0,false)}));
+                ()->showWorkspace(1),()->showVisualPage("Instances"),
+                ()->showWorkspace(0),()->showWorkspace(0)}));
         settingsContent.add(Box.createVerticalStrut(18));
         settingsContent.add(visualText("INTERFACE STYLE (SEPARATE FROM GAME SETTINGS)",15,true));
         settingsContent.add(Box.createVerticalStrut(8));
         settingsContent.add(actionsGrid(new String[]{"Visual Style", "Terminal Style"},
-            new Runnable[]{()->showVisualPage("Home"),()->showWorkspace(1,true)}));
+            new Runnable[]{()->chooseInterfaceStyle(false),()->chooseInterfaceStyle(true)}));
         screenRoot.add(visualPage("SETTINGS", "Change your wallpaper, generic pack defaults, or interface style",settingsContent),"Settings");
 
         screenRoot.add(visualPage("SOCIAL PLATFORMS", "Find and support Fathom Studios",
@@ -2545,7 +2649,7 @@ public class SkyLauncher {
         screenRoot.add(visualPage("ABOUT", "SkyLauncher 3.1.6  •  Fathom Studios",
             actionsGrid(new String[]{"Source on GitHub", "Check Updates", "System & Game Settings", "Style Settings"},
                 new Runnable[]{()->openVisualUrl("https://github.com/Newguygame/skylauncher"),
-                    this::checkLauncherUpdate,()->showWorkspace(1,false),()->showVisualPage("Settings")})),"About");
+                    this::checkLauncherUpdate,()->showWorkspace(1),()->showVisualPage("Settings")})),"About");
     }
     void showCurseForgeBridgeSettings() {
         JTextField address = new JTextField(cfConfiguredUrl(cfg), 36);
@@ -2629,16 +2733,18 @@ public class SkyLauncher {
         catch (Exception e) { JOptionPane.showMessageDialog(frame,"Unable to open: "+url+"\n"+e.getMessage()); }
     }
     void showVisualPage(String page) {
-        terminalStyleActive=false; VISUAL_GLASS=true;
-        cfg.put("fathom_ui_style","visual");saveConfig(cfg);
-        screenLayout.show(screenRoot,page);screenRoot.repaint();
+        // Navigating to any page must never silently switch interface style.
+        screenLayout.show(screenRoot,page);
+        screenRoot.revalidate(); screenRoot.repaint();
     }
+    void showWorkspace(int tab) { mainTabs.setSelectedIndex(tab); screenLayout.show(screenRoot,"workspace"); screenRoot.repaint(); }
     void showWorkspace(int tab, boolean terminal) {
-        terminalStyleActive=terminal; VISUAL_GLASS=!terminal;
-        cfg.put("fathom_ui_style",terminal?"terminal":"visual");saveConfig(cfg);
-        mainTabs.setSelectedIndex(tab);
-        screenLayout.show(screenRoot,"workspace");
-        screenRoot.repaint();
+        setInterfaceStyle(terminal);
+        showWorkspace(tab);
+    }
+    void chooseInterfaceStyle(boolean terminal) {
+        setInterfaceStyle(terminal);
+        showVisualPage("Settings");
     }
 
     void build() {
@@ -2660,8 +2766,8 @@ public class SkyLauncher {
         JLabel versionLabel = new JLabel("v"+VERSION); versionLabel.setForeground(MUTED); versionLabel.setFont(new Font("Dialog",Font.PLAIN,11));
         brandStack.add(versionLabel); header.add(brandStack,BorderLayout.WEST);
         JPanel workspaceNav = new JPanel(new FlowLayout(FlowLayout.CENTER, 6, 0)); workspaceNav.setOpaque(false);
-        workspaceNav.add(btn("← Visual Home", () -> showVisualPage("Home")));
-        workspaceNav.add(btn("Wallpaper tabs", () -> showWorkspace(mainTabs.getSelectedIndex(), false)));
+        workspaceNav.add(btn("← Home", () -> showVisualPage("Home")));
+        workspaceNav.add(btn("Visual Style", () -> showWorkspace(mainTabs.getSelectedIndex(), false)));
         workspaceNav.add(btn("Terminal style", () -> showWorkspace(mainTabs.getSelectedIndex(), true)));
         header.add(workspaceNav, BorderLayout.CENTER);
         JPanel account = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 0)); account.setOpaque(false);
@@ -2703,8 +2809,8 @@ public class SkyLauncher {
         frame.setContentPane(screenRoot);
         frame.setLocationRelativeTo(null); frame.setVisible(true);
         selectInstance(active());
-        if ("terminal".equals(s(cfg.get("fathom_ui_style")))) showWorkspace(0, true);
-        else showVisualPage("Home");
+        setInterfaceStyle("terminal".equals(s(cfg.get("fathom_ui_style"))));
+        showVisualPage("Home");
         if (!PREVIEW_MODE) { checkLauncherUpdate(); SwingUtilities.invokeLater(this::askDesktopShortcut); }
     }
     // Default upstream matches the Python launcher; allow user overrides.
@@ -3118,8 +3224,8 @@ public class SkyLauncher {
         styleCard.setAlignmentX(Component.LEFT_ALIGNMENT);
         styleCard.add(smallHeading("INTERFACE STYLE (NOT GAME SETTINGS)"), BorderLayout.NORTH);
         JPanel styleButtons = paddedRow(12);
-        styleButtons.add(btn("Visual Style / Home", () -> showVisualPage("Home")));
-        styleButtons.add(btn("Terminal Style (original)", () -> showWorkspace(1,true)));
+        styleButtons.add(btn("Visual Style", () -> chooseInterfaceStyle(false)));
+        styleButtons.add(btn("Terminal Style (full UI)", () -> chooseInterfaceStyle(true)));
         styleCard.add(styleButtons,BorderLayout.CENTER);
         page.add(styleCard); page.add(Box.createVerticalStrut(12));
 
