@@ -6,7 +6,7 @@ bridge=importlib.util.module_from_spec(spec);spec.loader.exec_module(bridge)
 class FakeCF:
     def search(self, query, version='', loader='', slug='', kind='mod'):
         return [{'id':101,'name':'Test mod','slug':'test-mod','summary':'','downloads':5, 'version':version,'loader':loader}]
-    def get_mod(self, mid, kind='mod'):return {'id':mid,'name':'Test mod','slug':'test-mod'}
+    def get_mod(self, mid, kind='mod', metadata_only=False):return {'id':mid,'name':'Test mod','slug':'test-mod'}
     def files(self, mid, version, loader, kind='mod'):return [{'id':202,'name':'test.jar'}]
     def file_info(self,mid,fid):return {'id':fid,'modId':mid,'fileName':'test.jar','hashes':[]}
     def download(self,mid,fid):return io.BytesIO(b'jar bytes'), {'fileName':'test.jar'}
@@ -26,6 +26,9 @@ class TestPublic(unittest.TestCase):
         mods=json.loads(self.get('/v1/search?q=test&version=1.21.1&loader=neoforge'))['data']
         self.assertEqual(mods[0]['loader'],'neoforge')
     def test_file_download(self):self.assertEqual(self.get('/v1/download/101/202'),b'jar bytes')
+    def test_public_project_identity(self):
+        mod=json.loads(self.get('/v1/mods/101'))
+        self.assertEqual(mod['slug'], 'test-mod')
     def test_invalid_endpoint(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:self.get('/config.json')
         self.assertEqual(ctx.exception.code,404)
