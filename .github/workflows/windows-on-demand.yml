@@ -1,0 +1,41 @@
+name: Build SkyLauncher Windows installer (standalone)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/windows-on-demand.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  windows-installer:
+    name: Windows installer with bundled Java
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
+          if (!(Test-Path $compiler)) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to install Inno Setup' }
+          }
+          if (!(Test-Path $compiler)) { throw 'Inno Setup missing' }
+      - name: Compile and build offline installer
+        shell: pwsh
+        run: ./build-windows-full-offline.ps1 -TestInstaller
+      - name: Upload verified Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkyLauncher-Windows-3.1.8-latest
+          path: dist/SkyLauncher-3.1.8.exe
+          if-no-files-found: error
+          retention-days: 14
